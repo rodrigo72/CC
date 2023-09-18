@@ -1,0 +1,16 @@
+# Ignore LaTeX build files and output
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.gz
+
+# Ignore LaTeX editor/project files
+.vscode/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
