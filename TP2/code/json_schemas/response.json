@@ -1,0 +1,20 @@
+{
+  "title": "FS_Tracker generic response",
+  "description": "Generic response from FS_Tracker, containing the action and the status of the request received",
+  "type": "object",
+  "properties": {
+    "action": {
+      "enum": ["register", "update", "locate", "leave"],
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "status": {
+      "enum": ["success", "invalid_request", "invalid_action", "denied", "not_found", "server_error", "unauthorized", "unavailable"],
+      "type": "string"
+    }
+  },
+  "required": ["action", "status", "message"],
+  "additionalProperties": false
+}

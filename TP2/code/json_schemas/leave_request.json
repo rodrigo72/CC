@@ -1,0 +1,16 @@
+{
+  "title": "Leave request",
+  "description": "Informs the tracker that a node is leaving the network, and the server deletes its data",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["leave"]
+    },
+    "address": {
+      "type": "string"
+    }
+  },
+  "required": ["action", "address"],
+  "additionalProperties": false
+}

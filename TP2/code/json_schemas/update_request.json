@@ -1,0 +1,41 @@
+{
+  "title": "Update request",
+  "description": "Request from a FS_Node to update FS_Tracker",
+  "type": "object",
+  "properties": {
+    "action": { "type": "string", "enum": ["update"] },
+    "address": { "type": "string", "format": "ipv4" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string"},
+          "size": { "type": "integer", "minimum": 0 },
+          "blocks" : {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "size": { "type": "integer", "minimum": 0 },
+                "numbers:" : {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "last_block_size": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "required": ["block_size"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["name", "size", "blocks"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["action","address","files"],
+  "additionalProperties": false
+}

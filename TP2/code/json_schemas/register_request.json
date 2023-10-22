@@ -1,0 +1,16 @@
+{
+  "title": "Registration request",
+  "description": "Request from a FS_Node to register with the FS_Tracker",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["register"]
+    },
+    "address": {
+      "type": "string"
+    }
+  },
+  "required": ["action", "address"],
+  "additionalProperties": false
+}
