@@ -4,8 +4,8 @@
   "type": "object",
   "properties": {
     "action": {
-      "type": "string",
-      "enum": ["register"]
+      "type": "integer",
+      "enum": [1]
     },
     "address": {
       "type": "string"

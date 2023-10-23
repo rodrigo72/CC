@@ -1,25 +1,25 @@
 import os
 import json
 import copy
-from enum import Enum
+from enum import IntEnum
 
 
-class message_action(Enum):
-    REGISTER = "register"
-    UPDATE = "update"
-    LEAVE = "leave"
-    LOCATE = "locate"
+class message_action(IntEnum):
+    REGISTER = 1
+    UPDATE = 2
+    LEAVE = 3
+    LOCATE = 4
 
 
-class response_status(Enum):
-    SUCCESS = "success"
-    INVALID_REQUEST = "invalid_request"
-    INVALID_ACTION = "invalid_action"
-    DENIED = "denied"
-    NOT_FOUND = "not_found"
-    SERVER_ERROR = "server_error"
-    UNAUTHORIZED = "unauthorized"
-    UNAVAILABLE = "unavailable"
+class response_status(IntEnum):
+    SUCCESS = 1
+    INVALID_REQUEST = 2
+    INVALID_ACTION = 3
+    DENIED = 4
+    NOT_FOUND = 5
+    SERVER_ERROR = 6
+    UNAUTHORIZED = 7
+    UNAVAILABLE = 8
 
 
 def _get_json_schemas(directory):
