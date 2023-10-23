@@ -15,7 +15,8 @@ class fs_node:
             server_port=9090,
             block_size=1024,
             debug=False,
-            buffer_size=1024
+            buffer_size=1024,
+            callback=None
     ):
         self.socket = None
         self.port = port
@@ -28,6 +29,7 @@ class fs_node:
         self.buffer_size = buffer_size
         self.done = False
         self.json_schemas = utils.json_schemas_provider().get_json_schemas()
+        self.callback = callback
 
     def read_directory(self):
         try:
@@ -145,7 +147,8 @@ class fs_node:
                 if not data:
                     break
 
-                # json_message = json.loads(data.decode('utf-8'))
+                json_message = json.loads(data.decode('utf-8'))
+                self.handle_server_response(json_message)
         except Exception as e:
             if self.debug:
                 print("Error:", e)
@@ -153,11 +156,29 @@ class fs_node:
             # self.send_leave_message()
             self.shutdown()
 
+    def handle_server_response(self, json_message):
+        # TODO: Handle server response
+        print(json_message)
+        if self.callback:
+            self.callback()
+        pass
+
 
 class fs_node_controller:
     def __init__(self, node):
+        self.response_event = threading.Event()
         self.node = node
         self.done = False
+
+    def set_response_event(self):
+        self.response_event.set()
+
+    def reset_response_event(self):
+        self.response_event.clear()
+
+    def wait_for_response(self):
+        self.response_event.wait()
+        self.reset_response_event()
 
     def run(self):
         while not self.done:
@@ -167,6 +188,7 @@ class fs_node_controller:
                 self.node.shutdown()
             elif command == "register":
                 self.node.send_register_request()
+                self.wait_for_response()
             elif command == "leave":
                 self.node.send_leave_request()
             elif command == "update":
@@ -188,6 +210,7 @@ if __name__ == "__main__":
     node_1_controller_thread = threading.Thread(target=node_1_controller.run)
     node_1_controller_thread.start()
 
+    node_1.callback = node_1_controller.set_response_event
+
     node_1.run()
     node_1_controller_thread.join()
-

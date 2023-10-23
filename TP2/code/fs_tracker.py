@@ -5,6 +5,7 @@ import socket
 import db
 from jsonschema import validate
 import utils
+import time
 
 
 class fs_tracker(Thread):
@@ -159,6 +160,8 @@ class fs_tracker(Thread):
 
             response = self.create_generic_response(
                 utils.message_action.REGISTER.value, result.value, status_message)
+
+            time.sleep(3)
 
             self.send_message(client, response)
         except Exception as e:
