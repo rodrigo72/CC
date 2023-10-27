@@ -4,14 +4,14 @@ import copy
 from enum import IntEnum
 
 
-class message_action(IntEnum):
+class action(IntEnum):
     REGISTER = 1
     UPDATE = 2
     LEAVE = 3
     LOCATE = 4
 
 
-class response_status(IntEnum):
+class status(IntEnum):
     SUCCESS = 1
     INVALID_REQUEST = 2
     INVALID_ACTION = 3

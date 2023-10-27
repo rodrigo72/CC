@@ -24,10 +24,10 @@ class fs_tracker_db_manager:
     def register_node(self, address):
         try:
             self.cursor.execute("INSERT INTO FS_Node VALUES (?)", (address,))
-            return utils.response_status.SUCCESS
+            return utils.status.SUCCESS
         except sqlite3.IntegrityError as e:
             print("Error: ", e)
-            return utils.response_status.INVALID_REQUEST
+            return utils.status.INVALID_REQUEST
         except Error as e:
             print("Error: ", e)
-            return utils.response_status.SERVER_ERROR
+            return utils.status.SERVER_ERROR

@@ -83,7 +83,7 @@ class fs_node:
 
         hostname = socket.gethostname()
         json_message = {
-            "action": utils.message_action.REGISTER.value,
+            "action": utils.action.REGISTER.value,
             "address": socket.gethostbyname(hostname)
         }
 

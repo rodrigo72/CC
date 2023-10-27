@@ -128,9 +128,9 @@ class fs_tracker(Thread):
     def handle_json_message(self, client, json_message):
 
         switch_message_action = {
-            utils.message_action.REGISTER.value: self.handle_registration_message,
-            utils.message_action.UPDATE.value: self.handle_update_message,
-            utils.message_action.LEAVE.value: self.handle_leave_message
+            utils.action.REGISTER.value: self.handle_registration_message,
+            utils.action.UPDATE.value: self.handle_update_message,
+            utils.action.LEAVE.value: self.handle_leave_message
         }
 
         if json_message["action"] in switch_message_action:
@@ -153,13 +153,13 @@ class fs_tracker(Thread):
             address = json_message["address"]
             result = self.data_manager.register_node(address)
 
-            if result == utils.response_status.SUCCESS:
+            if result == utils.status.SUCCESS:
                 status_message = "Node registered successfully"
             else:
                 status_message = "Node registration unsuccessful"
 
             response = self.create_generic_response(
-                utils.message_action.REGISTER.value, result.value, status_message)
+                utils.action.REGISTER.value, result.value, status_message)
 
             time.sleep(3)
 
@@ -168,8 +168,8 @@ class fs_tracker(Thread):
             if self.debug:
                 print("Error:", e)
             self.send_message(client, self.create_generic_response(
-                utils.message_action.REGISTER.value,
-                utils.response_status.INVALID_REQUEST.value,
+                utils.action.REGISTER.value,
+                utils.status.INVALID_REQUEST.value,
                 "Invalid request"))
 
 
