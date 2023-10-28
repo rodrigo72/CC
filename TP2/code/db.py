@@ -32,5 +32,6 @@ class fs_tracker_db_manager:
             print("Error: ", e)
             return utils.status.SERVER_ERROR
 
-    def update_fs_node(self, json_data):
-        print(json_data)
+    def update_fs_node(self, json_data, address):
+        print(address, json_data)
+        return utils.status.SUCCESS.value

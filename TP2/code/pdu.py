@@ -1,7 +1,5 @@
-import json
 import struct
 import utils
-from jsonschema import validate
 
 
 def pdu_encode(pdu_type, data_to_send):
@@ -14,6 +12,25 @@ def pdu_encode(pdu_type, data_to_send):
 
 def pdu_encode_leave(data_to_send):
     pass
+
+
+def pdu_encode_response(results, counter):
+    flat_data = []
+    status_dict = {}
+
+    for status in results:
+        status_count = status_dict.get(status, 0)
+        status_dict[status] = status_count + 1
+
+    status_dict_len = len(status_dict)
+    flat_data.extend([utils.action.RESPONSE.value, counter, status_dict_len])
+    format_string = '!BHB'
+
+    for status, count in status_dict.items():
+        flat_data.extend([status, count])
+        format_string += 'BB'
+
+    return struct.pack(format_string, *flat_data)
 
 
 def pdu_encode_files_info(files_infos):
@@ -77,6 +94,7 @@ def get_sequences(block_numbers):
     return sequences + [residual]
 
 
+# for testing purposes
 if __name__ == "__main__":
     files_info = [
         {
@@ -91,16 +109,6 @@ if __name__ == "__main__":
                     "size": 2048,
                     "last_block_size": 1021,
                     "numbers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 14, 20],
-                }
-            ],
-        },
-        {
-            "name": "panik.png",
-            "blocks": [
-                {
-                    "size": 512,
-                    "last_block_size": 21,
-                    "numbers": [5, 6, 11, 12, 13, 14],
                 }
             ],
         },

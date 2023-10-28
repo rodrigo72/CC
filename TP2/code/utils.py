@@ -5,21 +5,21 @@ from enum import IntEnum
 
 
 class action(IntEnum):
-    REGISTER = 1
-    UPDATE = 2
-    LEAVE = 3
-    LOCATE = 4
+    UPDATE = 0
+    LEAVE = 1
+    LOCATE = 2
+    RESPONSE = 3
 
 
 class status(IntEnum):
-    SUCCESS = 1
-    INVALID_REQUEST = 2
-    INVALID_ACTION = 3
-    DENIED = 4
-    NOT_FOUND = 5
-    SERVER_ERROR = 6
-    UNAUTHORIZED = 7
-    UNAVAILABLE = 8
+    SUCCESS = 0
+    INVALID_REQUEST = 1
+    INVALID_ACTION = 2
+    DENIED = 3
+    NOT_FOUND = 4
+    SERVER_ERROR = 5
+    UNAUTHORIZED = 6
+    UNAVAILABLE = 7
 
 
 class SingletonMeta(type):

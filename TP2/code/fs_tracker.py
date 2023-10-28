@@ -5,9 +5,8 @@ import socket
 import db
 from jsonschema import validate
 import utils
-import time
-import pdu
 import struct
+import pdu
 
 
 class fs_tracker(Thread):
@@ -74,6 +73,7 @@ class fs_tracker(Thread):
             ).start()
 
     def listen_to_client(self, client, address, on_data_received_callback, on_disconnected_callback):
+        counter = 0
         while True:
             try:
                 bytes_read = client.recv(1)
@@ -81,11 +81,12 @@ class fs_tracker(Thread):
                 if not bytes_read:
                     continue
 
+                counter += 1
                 decoded_byte = struct.unpack("!B", bytes_read)[0]
 
                 match decoded_byte:
                     case utils.action.UPDATE.value:
-                        self.handle_update_message(client)
+                        self.handle_update_message(client, address, counter)
                     case _:
                         if self.debug:
                             print("Error: Invalid message action")
@@ -107,7 +108,7 @@ class fs_tracker(Thread):
 
         return False
 
-    def handle_update_message(self, client):
+    def handle_update_message(self, client, address, counter):
         bytes_read = client.recv(1)
         n_files = struct.unpack("!B", bytes_read)[0]
 
@@ -152,15 +153,23 @@ class fs_tracker(Thread):
             })
 
         try:
+            results = []
             for file in json_data:
                 validate(file, self.json_schemas["file_info.json"])
                 if self.debug:
                     print("JSON is valid against the schema.")
-                self.data_manager.update_fs_node(file)
+                results.append(self.data_manager.update_fs_node(file, address))
+
+            encoded_response = pdu.pdu_encode_response(results, counter)
+            client.sendall(encoded_response)
+
+            print("Response sent")
+
         except Exception as e:
             if self.debug:
-                print("JSON is not valid against the schema.")
-                print(e)
+                print("JSON is not valid against the schema.", e)
+            encoded_response = pdu.pdu_encode_response([utils.status.INVALID_REQUEST.value], counter)
+            client.sendall(encoded_response)
 
 
 if __name__ == "__main__":

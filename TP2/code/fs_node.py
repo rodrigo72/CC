@@ -5,6 +5,7 @@ import threading
 import utils
 from jsonschema import validate
 import pdu
+import struct
 
 
 class fs_node:
@@ -106,12 +107,17 @@ class fs_node:
             self.connect_to_fs_tracker()
 
             while not self.done:
-                data = self.socket.recv(self.buffer_size)
+                data = self.socket.recv(1)
                 if not data:
-                    break
+                    continue
+                data = struct.unpack("!B", data)[0]
+                match data:
+                    case utils.action.RESPONSE.value:
+                        self.handle_server_response()
+                    case _:
+                        if self.debug:
+                            print("Invalid action")
 
-                json_message = json.loads(data.decode('utf-8'))
-                self.handle_server_response(json_message)
         except Exception as e:
             if self.debug:
                 print("Error:", e)
@@ -119,9 +125,20 @@ class fs_node:
             # self.send_leave_message()
             self.shutdown()
 
-    def handle_server_response(self, json_message):
+    def handle_server_response(self):
         # TODO: Handle server response
-        print(json_message)
+
+        bytes_read = self.socket.recv(3)
+        counter, status_dict_len = struct.unpack("!HB", bytes_read)
+
+        status_dict = {}
+        for _ in range(status_dict_len):
+            bytes_read = self.socket.recv(2)
+            status, status_count = struct.unpack("!BB", bytes_read)
+            status_dict[status] = status_count
+
+        print(counter, status_dict)
+
         if self.callback:
             self.callback()
         pass
@@ -151,10 +168,10 @@ class fs_node_controller:
                 self.node.shutdown()
             elif command == "leave":
                 self.node.send_leave_request()
-                # self.wait_for_response()
+                self.wait_for_response()
             elif command == "update":
                 self.node.send_update_message()
-                # self.wait_for_response()
+                self.wait_for_response()
             else:
                 print("Invalid command")
 
