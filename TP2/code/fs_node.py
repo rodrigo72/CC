@@ -65,9 +65,8 @@ class fs_node:
 
             last_block_size = file_size % self.block_size
 
-            self.files[file_name] = {
+            json_data = {
                 "name": file_name,
-                "size": file_size,
                 "blocks": [
                     {
                         "size": self.block_size,
@@ -76,6 +75,16 @@ class fs_node:
                     }
                 ]
             }
+
+            try:
+                validate(json_data, self.json_schemas["file_info.json"])
+                if self.debug:
+                    print("JSON is valid against the schema.")
+                self.files[file_name] = json_data
+            except Exception as e:
+                if self.debug:
+                    print("JSON is not valid against the schema.")
+                    print(e)
 
     def create_register_request(self):
 

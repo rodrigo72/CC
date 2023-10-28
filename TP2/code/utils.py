@@ -1,7 +1,7 @@
 import os
 import json
 import copy
-from enum import IntEnum
+from enum import IntEnum, Enum
 
 
 class action(IntEnum):
