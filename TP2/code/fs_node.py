@@ -4,6 +4,7 @@ import socket
 import threading
 import utils
 from jsonschema import validate
+import pdu
 
 
 class fs_node:
@@ -39,8 +40,6 @@ class fs_node:
         except Exception as e:
             if self.debug:
                 print(e)
-
-        print(self.files)
 
     def save_blocks(self, file_name):
         path = os.path.join(self.directory, "Files", file_name)
@@ -86,39 +85,6 @@ class fs_node:
                     print("JSON is not valid against the schema.")
                     print(e)
 
-    def create_register_request(self):
-
-        json_schema = self.json_schemas["register_request.json"]
-
-        hostname = socket.gethostname()
-        json_message = {
-            "action": utils.action.REGISTER.value,
-            "address": socket.gethostbyname(hostname)
-        }
-
-        try:
-            validate(json_message, json_schema)
-            if self.debug:
-                print("JSON is valid against the schema.")
-            return json.dumps(json_message).encode('utf-8')
-        except Exception as e:
-            if self.debug:
-                print("JSON is not valid against the schema.")
-                print(e)
-            return None
-
-    def create_locate_request(self, file_name):
-        # TODO: Create a locate request
-        pass
-
-    def create_leave_request(self):
-        # TODO: Create a leave request
-        pass
-
-    def create_update_request(self, file_info_set):
-        # TODO: Create an update request
-        pass
-
     def connect_to_fs_tracker(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.server_host, self.server_port))
@@ -128,24 +94,12 @@ class fs_node:
         if self.socket:
             self.socket.close()
 
-    def send_message(self, message):
-        try:
-            serialized_message = json.dumps(message)
-            self.socket.sendall(serialized_message.encode('utf-8'))
-        except Exception as e:
-            print("Error sending message:", e)
-
-    def send_register_request(self):
-        registration_message = self.create_register_request()
-        self.socket.send(registration_message)
-
     def send_leave_request(self):
-        leave_message = self.create_leave_request()
-        self.socket.send(leave_message)
+        pass
 
     def send_update_message(self):
-        update_message = self.create_update_request()
-        self.socket.send(update_message)
+        update_message = pdu.pdu_encode(utils.action.UPDATE.value, self.files.values())
+        self.socket.sendall(update_message)
 
     def run(self):
         try:
@@ -195,13 +149,12 @@ class fs_node_controller:
             if command == "exit":
                 self.done = True
                 self.node.shutdown()
-            elif command == "register":
-                self.node.send_register_request()
-                self.wait_for_response()
             elif command == "leave":
                 self.node.send_leave_request()
+                # self.wait_for_response()
             elif command == "update":
                 self.node.send_update_message()
+                # self.wait_for_response()
             else:
                 print("Invalid command")
 

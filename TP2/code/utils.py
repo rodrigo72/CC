@@ -1,7 +1,7 @@
 import os
 import json
 import copy
-from enum import IntEnum, Enum
+from enum import IntEnum
 
 
 class action(IntEnum):
@@ -22,6 +22,29 @@ class status(IntEnum):
     UNAVAILABLE = 8
 
 
+class SingletonMeta(type):
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        if cls not in cls._instances:
+            instance = super().__call__(*args, **kwargs)
+            cls._instances[cls] = instance
+        return cls._instances[cls]
+
+
+class json_schemas_provider(metaclass=SingletonMeta):
+    def __init__(self):
+        self._json_schemas = _get_json_schemas(
+            os.path.join(os.path.dirname(__file__), "json_schemas")
+        )
+
+    def get_json_schemas(self):
+        return copy.deepcopy(self._json_schemas)
+
+    def get_json_schema(self, schema_name):
+        return copy.deepcopy(self._json_schemas[schema_name])
+
+
 def _get_json_schemas(directory):
     json_schemas = {}
     for filename in os.listdir(directory):
@@ -34,24 +57,3 @@ def _get_json_schemas(directory):
                 print(e)
 
     return json_schemas
-
-
-class json_schemas_provider:
-    _instance = None  # singleton pattern
-
-    def __init__(self):
-        self._json_schemas = _get_json_schemas(
-            os.path.join(os.path.dirname(__file__), "json_schemas")
-        )
-
-    def __new__(cls, self=None, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(json_schemas_provider, cls).__new__(cls)
-            cls._instance.__init__()
-        return cls._instance
-
-    def get_json_schemas(self):
-        return copy.deepcopy(self._json_schemas)
-
-    def get_json_schema(self, schema_name):
-        return copy.deepcopy(self._json_schemas[schema_name])

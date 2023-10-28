@@ -6,6 +6,8 @@ import db
 from jsonschema import validate
 import utils
 import time
+import pdu
+import struct
 
 
 class fs_tracker(Thread):
@@ -74,15 +76,20 @@ class fs_tracker(Thread):
     def listen_to_client(self, client, address, on_data_received_callback, on_disconnected_callback):
         while True:
             try:
-                data = client.recv(self.buffer_size)
-                if not data:
-                    break
+                bytes_read = client.recv(1)
 
-                json_message = json.loads(data.decode('utf-8'))
-                self.handle_json_message(client, json_message)
+                if not bytes_read:
+                    continue
 
-                if on_data_received_callback:
-                    on_data_received_callback(client, address)
+                decoded_byte = struct.unpack("!B", bytes_read)[0]
+
+                match decoded_byte:
+                    case utils.action.UPDATE.value:
+                        self.handle_update_message(client)
+                    case _:
+                        if self.debug:
+                            print("Error: Invalid message action")
+
             except socket.timeout:
                 pass
             except Exception as e:
@@ -100,77 +107,60 @@ class fs_tracker(Thread):
 
         return False
 
-    def send_message(self, client, message):
+    def handle_update_message(self, client):
+        bytes_read = client.recv(1)
+        n_files = struct.unpack("!B", bytes_read)[0]
+
+        json_data = []
+
+        for file in range(n_files):
+            bytes_read = client.recv(1)
+            filename_len = struct.unpack("!B", bytes_read)[0]
+            bytes_read = client.recv(filename_len)
+            filename = struct.unpack("!%ds" % filename_len, bytes_read)[0].decode("utf-8")
+
+            bytes_read = client.recv(1)
+            n_block_sets = struct.unpack("!B", bytes_read)[0]
+
+            blocks = []
+            for block_set in range(n_block_sets):
+                bytes_read = client.recv(5)
+                block_size, last_block_size, n_sequences = struct.unpack("!HHB", bytes_read)
+                block_numbers = []
+
+                for sequence in range(n_sequences):
+                    bytes_read = client.recv(4)
+                    first, last = struct.unpack("!HH", bytes_read)
+                    block_numbers.extend(range(first, last + 1))
+
+                bytes_read = client.recv(2)
+                n_block_numbers = struct.unpack("!H", bytes_read)[0]
+                for block_number in range(n_block_numbers):
+                    bytes_read = client.recv(2)
+                    block = struct.unpack("!H", bytes_read)[0]
+                    block_numbers.append(block)
+
+                blocks.append({
+                    "size": block_size,
+                    "numbers": block_numbers,
+                    "last_block_size": last_block_size
+                })
+
+            json_data.append({
+                "name": filename,
+                "blocks": blocks
+            })
+
         try:
-            client.sendall(json.dumps(message).encode('utf-8'))
+            for file in json_data:
+                validate(file, self.json_schemas["file_info.json"])
+                if self.debug:
+                    print("JSON is valid against the schema.")
+                self.data_manager.update_fs_node(file)
         except Exception as e:
             if self.debug:
-                print("Error sending message:", e)
-
-    def create_generic_response(self, action, status, message):
-
-        json_response = {
-            "action": action,
-            "status": status,
-            "message": message
-        }
-
-        try:
-            validate(json_response, self.json_schemas["response.json"])
-            if self.debug:
-                print("Response message validated")
-            return message
-        except Exception as e:
-            if self.debug:
-                print("Error:", e)
-            return None
-
-    def handle_json_message(self, client, json_message):
-
-        switch_message_action = {
-            utils.action.REGISTER.value: self.handle_registration_message,
-            utils.action.UPDATE.value: self.handle_update_message,
-            utils.action.LEAVE.value: self.handle_leave_message
-        }
-
-        if json_message["action"] in switch_message_action:
-            switch_message_action[json_message["action"]](json_message, client)
-        elif self.debug:
-            print("Error: Invalid message action")
-
-    def handle_leave_message(self, json_message, client):
-        # TODO: Handle leave message
-        pass
-
-    def handle_update_message(self, json_message, client):
-        # TODO: Handle update message
-        pass
-
-    def handle_registration_message(self, json_message, client):
-        print("Handling registration message")
-        try:
-            validate(json_message, self.json_schemas["register_request.json"])
-            address = json_message["address"]
-            result = self.data_manager.register_node(address)
-
-            if result == utils.status.SUCCESS:
-                status_message = "Node registered successfully"
-            else:
-                status_message = "Node registration unsuccessful"
-
-            response = self.create_generic_response(
-                utils.action.REGISTER.value, result.value, status_message)
-
-            time.sleep(3)
-
-            self.send_message(client, response)
-        except Exception as e:
-            if self.debug:
-                print("Error:", e)
-            self.send_message(client, self.create_generic_response(
-                utils.action.REGISTER.value,
-                utils.status.INVALID_REQUEST.value,
-                "Invalid request"))
+                print("JSON is not valid against the schema.")
+                print(e)
 
 
 if __name__ == "__main__":
