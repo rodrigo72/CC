@@ -1,4 +1,3 @@
-import json
 import os
 import socket
 import threading
@@ -117,7 +116,6 @@ class fs_node:
                     case _:
                         if self.debug:
                             print("Invalid action")
-
         except Exception as e:
             if self.debug:
                 print("Error:", e)
@@ -126,22 +124,13 @@ class fs_node:
             self.shutdown()
 
     def handle_server_response(self):
-        # TODO: Handle server response
-
         bytes_read = self.socket.recv(3)
-        counter, status_dict_len = struct.unpack("!HB", bytes_read)
+        status, counter = struct.unpack("!BH", bytes_read)
 
-        status_dict = {}
-        for _ in range(status_dict_len):
-            bytes_read = self.socket.recv(2)
-            status, status_count = struct.unpack("!BB", bytes_read)
-            status_dict[status] = status_count
-
-        print(counter, status_dict)
+        print(utils.status(status).name, counter)
 
         if self.callback:
             self.callback()
-        pass
 
 
 class fs_node_controller:
@@ -163,13 +152,13 @@ class fs_node_controller:
     def run(self):
         while not self.done:
             command = input("Enter a command: ")
-            if command == "exit":
+            if command == "exit" or command == "e":
                 self.done = True
                 self.node.shutdown()
-            elif command == "leave":
+            elif command == "leave" or command == "l":
                 self.node.send_leave_request()
                 self.wait_for_response()
-            elif command == "update":
+            elif command == "update" or command == "u":
                 self.node.send_update_message()
                 self.wait_for_response()
             else:

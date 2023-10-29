@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from threading import Thread
 import socket
@@ -153,22 +152,24 @@ class fs_tracker(Thread):
             })
 
         try:
-            results = []
+            if json_data is None:
+                raise Exception("Error: No data received")
+
             for file in json_data:
                 validate(file, self.json_schemas["file_info.json"])
                 if self.debug:
                     print("JSON is valid against the schema.")
-                results.append(self.data_manager.update_fs_node(file, address))
 
-            encoded_response = pdu.pdu_encode_response(results, counter)
+            result = self.data_manager.update_fs_node(json_data, address[0])
+
+            encoded_response = pdu.pdu_encode_response(result, counter)
             client.sendall(encoded_response)
-
             print("Response sent")
 
         except Exception as e:
             if self.debug:
-                print("JSON is not valid against the schema.", e)
-            encoded_response = pdu.pdu_encode_response([utils.status.INVALID_REQUEST.value], counter)
+                print("Error: ", e)
+            encoded_response = pdu.pdu_encode_response(utils.status.INVALID_REQUEST.value, counter)
             client.sendall(encoded_response)
 
 

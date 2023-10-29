@@ -7,29 +7,13 @@ def pdu_encode(pdu_type, data_to_send):
         case utils.action.UPDATE.value:
             return pdu_encode_files_info(data_to_send)
         case utils.action.LEAVE.value:
-            return pdu_encode_leave(data_to_send)
+            return None
 
 
-def pdu_encode_leave(data_to_send):
-    pass
-
-
-def pdu_encode_response(results, counter):
+def pdu_encode_response(result, counter):
     flat_data = []
-    status_dict = {}
-
-    for status in results:
-        status_count = status_dict.get(status, 0)
-        status_dict[status] = status_count + 1
-
-    status_dict_len = len(status_dict)
-    flat_data.extend([utils.action.RESPONSE.value, counter, status_dict_len])
-    format_string = '!BHB'
-
-    for status, count in status_dict.items():
-        flat_data.extend([status, count])
-        format_string += 'BB'
-
+    flat_data.extend([utils.action.RESPONSE.value, result, counter])
+    format_string = '!BBH'
     return struct.pack(format_string, *flat_data)
 
 
