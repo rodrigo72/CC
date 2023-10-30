@@ -184,6 +184,7 @@ class fs_tracker(Thread):
         file_name = struct.unpack("!%ds" % file_name_len, bytes_read)[0].decode("utf-8")
         addresses, result1, result2 = self.data_manager.locate_file(file_name)
         encoded_results = pdu.pdu_encode_locate_response(addresses, result1, result2, counter)
+        # client.sendall(encoded_results)
         self.send_response(client, utils.status.SUCCESS.value, counter)
 
 

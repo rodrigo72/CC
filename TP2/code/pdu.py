@@ -51,8 +51,8 @@ def pdu_encode_locate_response(addresses, result1, result2, counter):
 
     number_of_ips = len(ip_block_size_dict.keys())
 
-    format_string = '!BH'
-    flat_data = [utils.action.RESPONSE_LOCATE.value, number_of_ips]
+    format_string = '!BHH'
+    flat_data = [utils.action.RESPONSE_LOCATE.value, counter, number_of_ips]
 
     for ip_address, block_size_dict in ip_block_size_dict.items():
 
@@ -94,8 +94,8 @@ def pdu_encode_locate_response(addresses, result1, result2, counter):
             format_string += 'H' * n_residual
             flat_data.extend(residual)
 
-    encoded = struct.pack(format_string, *flat_data)
-    print(format_string, "\n", flat_data, "\n", encoded)
+    print(flat_data)
+    return struct.pack(format_string, *flat_data)
 
 
 def pdu_encode_files_info(files_infos):
