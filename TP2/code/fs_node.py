@@ -101,6 +101,10 @@ class fs_node:
         update_message = pdu.pdu_encode(utils.action.UPDATE.value, self.files.values())
         self.socket.sendall(update_message)
 
+    def send_locate_message(self, file_name):
+        locate_message = pdu.pdu_encode(utils.action.LOCATE.value, file_name)
+        self.socket.sendall(locate_message)
+
     def run(self):
         try:
             self.connect_to_fs_tracker()
@@ -160,6 +164,10 @@ class fs_node_controller:
                 self.wait_for_response()
             elif command == "update" or command == "u":
                 self.node.send_update_message()
+                self.wait_for_response()
+            elif command == "locate" or command == "lo":
+                file_name = input("Enter a file name: ")
+                self.node.send_locate_message(file_name)
                 self.wait_for_response()
             else:
                 print("Invalid command")

@@ -86,6 +86,8 @@ class fs_tracker(Thread):
                 match decoded_byte:
                     case utils.action.UPDATE.value:
                         self.handle_update_message(client, address, counter)
+                    case utils.action.LOCATE.value:
+                        self.handle_locate_message(client, address, counter)
                     case _:
                         if self.debug:
                             print("Error: Invalid message action")
@@ -106,6 +108,12 @@ class fs_tracker(Thread):
             print(datetime.now(), "Client disconnected", address)
 
         return False
+
+    def send_response(self, client, response, counter):
+        encoded_response = pdu.pdu_encode_response(response, counter)
+        client.sendall(encoded_response)
+        if self.debug:
+            print("Response sent")
 
     def handle_update_message(self, client, address, counter):
         bytes_read = client.recv(1)
@@ -161,16 +169,22 @@ class fs_tracker(Thread):
                     print("JSON is valid against the schema.")
 
             result = self.data_manager.update_fs_node(json_data, address[0])
-
-            encoded_response = pdu.pdu_encode_response(result, counter)
-            client.sendall(encoded_response)
-            print("Response sent")
+            self.send_response(client, result, counter)
 
         except Exception as e:
             if self.debug:
                 print("Error: ", e)
-            encoded_response = pdu.pdu_encode_response(utils.status.INVALID_REQUEST.value, counter)
-            client.sendall(encoded_response)
+            self.send_response(client, utils.status.INVALID_REQUEST.value, counter)
+
+    def handle_locate_message(self, client, address, counter):
+        print("Locate message received")
+        bytes_read = client.recv(1)
+        file_name_len = struct.unpack("!B", bytes_read)[0]
+        bytes_read = client.recv(file_name_len)
+        file_name = struct.unpack("!%ds" % file_name_len, bytes_read)[0].decode("utf-8")
+        addresses, result1, result2 = self.data_manager.locate_file(file_name)
+        encoded_results = pdu.pdu_encode_locate_response(addresses, result1, result2, counter)
+        self.send_response(client, utils.status.SUCCESS.value, counter)
 
 
 if __name__ == "__main__":

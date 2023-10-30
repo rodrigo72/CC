@@ -1,13 +1,23 @@
 import struct
 import utils
+import ast
 
 
 def pdu_encode(pdu_type, data_to_send):
     match pdu_type:
         case utils.action.UPDATE.value:
             return pdu_encode_files_info(data_to_send)
-        case utils.action.LEAVE.value:
+        case utils.action.LOCATE.value:
+            return pdu_encode_locate(data_to_send)
+        case _:
             return None
+
+
+def pdu_encode_locate(data_to_send):
+    file_name = data_to_send.encode("utf-8")
+    file_name_len = len(file_name)
+    return struct.pack('!BB%ds' % file_name_len,
+                       utils.action.LOCATE.value, file_name_len, file_name)
 
 
 def pdu_encode_response(result, counter):
@@ -15,6 +25,36 @@ def pdu_encode_response(result, counter):
     flat_data.extend([utils.action.RESPONSE.value, result, counter])
     format_string = '!BBH'
     return struct.pack(format_string, *flat_data)
+
+
+def pdu_encode_locate_response(addresses, result1, result2, counter):
+    addresses_dict = {}
+    for address in addresses:
+        addresses_dict[address[1]] = address[0]
+
+    print(result1, result2, "\n\n")
+
+    block_size_dict = {}
+    for triple in result1:
+        block_size = triple[0]
+        block_numbers = list(map(int, triple[1].split(',')))
+        ip_address = addresses_dict[triple[2]]
+        if block_size in block_size_dict:
+            block_size_dict[block_size][ip_address] = block_numbers
+        else:
+            block_size_dict[block_size] = {ip_address: block_numbers}
+
+    last_block_size_dict = {}
+    for triple in result2:
+        last_block_size = triple[0]
+        block_dada = list(map(int, triple[1].split(',')))
+        block_number, original_division_size = block_dada[0], block_dada[1]
+        ip_address = addresses_dict[triple[2]]
+        if original_division_size not in last_block_size_dict:
+            last_block_size_dict[original_division_size] = {ip_address: (block_number, last_block_size)}
+
+    print(block_size_dict)
+    print(last_block_size_dict)
 
 
 def pdu_encode_files_info(files_infos):
