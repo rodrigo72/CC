@@ -21,12 +21,12 @@ class fs_tracker_db_manager(metaclass=utils.SingletonMeta):
             self.conn.commit()
             self.conn.close()
 
-    def update_fs_node(self, json_data, address):
+    def update_fs_node(self, json_data, ip_address):
         try:
             self.conn.execute("BEGIN")
-            self.cursor.execute("INSERT OR IGNORE INTO fs_node VALUES (?)", (address,))
+            self.cursor.execute("INSERT OR IGNORE INTO fs_node VALUES (?)", (ip_address,))
             for file_info in json_data:
-                self._add_file_info(file_info, address)
+                self._add_file_info(file_info, ip_address)
             self.conn.commit()
             return utils.status.SUCCESS.value
         except Error as e:

@@ -9,6 +9,7 @@ class action(IntEnum):
     LEAVE = 1
     LOCATE = 2
     RESPONSE = 3
+    RESPONSE_LOCATE = 4
 
 
 class status(IntEnum):
