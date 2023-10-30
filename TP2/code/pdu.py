@@ -1,6 +1,7 @@
 import struct
 import utils
 import ast
+from typing import List, Union
 
 
 def pdu_encode(pdu_type, data_to_send):
@@ -40,9 +41,16 @@ def pdu_encode_locate_response(addresses, result1, result2, counter):
         block_numbers = list(map(int, triple[1].split(',')))
         ip_address = addresses_dict[triple[2]]
         if block_size in block_size_dict:
-            block_size_dict[block_size][ip_address] = block_numbers
+            if ip_address in block_size_dict[block_size]:
+                block_size_dict[block_size][ip_address].extend(block_numbers)
+            else:
+                block_size_dict[block_size][ip_address] = block_numbers
         else:
             block_size_dict[block_size] = {ip_address: block_numbers}
+
+    for block_size in block_size_dict:
+        for ip_address in block_size_dict[block_size]:
+            block_size_dict[block_size][ip_address] = get_sequences(block_size_dict[block_size][ip_address])
 
     last_block_size_dict = {}
     for triple in result2:
@@ -95,7 +103,7 @@ def pdu_encode_files_info(files_infos):
     return struct.pack(format_string, *flat_data)
 
 
-def get_sequences(block_numbers):
+def get_sequences(block_numbers: List[int]) -> List[Union[List[int], int]]:
     sequences = []
     current_sequence = []
     residual = []
@@ -115,7 +123,9 @@ def get_sequences(block_numbers):
     else:
         residual.extend(current_sequence)
 
-    return sequences + [residual]
+    if len(residual) > 0:
+        sequences += [residual]
+    return sequences
 
 
 # for testing purposes
