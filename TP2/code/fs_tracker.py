@@ -15,7 +15,7 @@ class FS_Tracker(Thread):
         port=9090,
         host=None,
         max_connections=5,
-        timeout=60*5,
+        timeout=60*10,
         debug=False,
     ):
         self.socket = None
@@ -27,13 +27,11 @@ class FS_Tracker(Thread):
         self.debug = debug
         self.clients = []
         Thread.__init__(self)    
-
+ 
     def run(self):
+        
         if self.debug:
             print(datetime.now(), "Starting ...")
-        self.listen()
-        
-    def listen(self):
                 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -94,8 +92,8 @@ class FS_Tracker(Thread):
                     break
                 elif decoded_byte == action.UPDATE.value:
                     self.handle_update_message(client, address, counter)
-                elif decoded_byte == action.LOCATE.value:
-                    self.handle_locate_message(client, address, counter)
+                elif decoded_byte == action.LOCATE_NAME.value or decoded_byte == action.LOCATE_HASH.value:
+                    self.handle_locate_message(client, address, counter, decoded_byte)
                 else:
                     break
 
@@ -111,30 +109,137 @@ class FS_Tracker(Thread):
 
         return False
     
-    def handle_locate_message(self, client, address, counter):
+    def handle_locate_message(self, client, address, counter, locate_type):
         if self.debug:
             print(datetime.now(), "Received LOCATE")
+            
+        results = None
+        if locate_type == action.LOCATE_NAME.value:
+            
+            file_name_length = struct.unpack("!B", client.recv(1))[0]
+            file_name = struct.unpack(
+                "!%ds" % file_name_length, 
+                client.recv(file_name_length))[0].decode("utf-8")
+            
+            results = self.db.locate_file_name(file_name, address[0])
+                        
+        elif locate_type == action.LOCATE_HASH.value:
+            
+            file_hash_length = struct.unpack("!H", client.recv(2))[0]                    
+            file_hash = struct.unpack(
+                "!%ds" % file_hash_length, 
+                client.recv(file_hash_length))[0]
+            
+            file_hash_hex = file_hash.hex()
+            results = self.db.locate_file_hash(file_hash_hex, address[0])            
+                    
+        else:
+            self.send_response(client, status.INVALID_REQUEST.value, counter)
+            return
         
-        bytes_read = client.recv(1)
-        file_name_length = struct.unpack("!B", bytes_read)[0]
-        bytes_read = client.recv(file_name_length)
+        if results is None:
+            self.send_response(client, status.SERVER_ERROR.value, counter)
+            return
+            
+        if len(results) == 0:
+            self.send_response(client, status.NOT_FOUND.value, counter)
         
-        print(file_name_length, len(bytes_read))
+        response = self.encode_locate_response(results, counter)
+        if response is None or len(response) == 0:
+            self.send_response(client, status.NOT_FOUND.value, counter)
+        else:
+            client.sendall(response)
+    
+    def encode_locate_response(self, results, counter):
+        if self.debug:
+            print(datetime.now(), "Encoding LOCATE response")
+            
+        if results is None:
+            return None
         
-        if len(bytes_read) != file_name_length:
-            raise ValueError("Failed to read the full file name")
+        format_string = "!B"
+        flat_data = [action.RESPONSE_LOCATE.value]
         
-        file_name = struct.unpack("!%ds" % file_name_length, bytes_read)[0].decode("utf-8")
-        print(file_name)
-        self.send_response(client, status.SUCCESS.value, counter)
-        self.db.locate_file(file_name)
+        # ip => (division_size => (block_size, block_number, is_last))
+        ips = {}
+        
+        for result in results:
+            ip, block_size, block_number, division_size, is_last = result
+            
+            if ips.get(ip) is None:
+                ips[ip] = {}
+                
+            if ips[ip].get(division_size) is None:
+                ips[ip][division_size] = []
+                
+            ips[ip][division_size].append((block_size, block_number, is_last))
+        
+        # ip => (division_size => (division_size, last_block_size, is_full_file, block_numbers))
+        new_ips = {}
+        
+            
+        for ip, division_size_dict in ips.items():
+            for division_size, block_list in division_size_dict.items():
+                
+                sorted(block_list, key=lambda x: x[1])
+                
+                block_list_length = len(block_list)
+                last_block = block_list[-1]
+                
+                if block_list_length == last_block[1]:
+                    if new_ips.get(ip) is None:
+                        new_ips[ip] = []
+                    new_ips[ip].append((division_size, last_block[0], last_block[1], []))
+                    
+                else:
+                    block_numbers = [block[1] for block in block_list]
+                    
+                    if new_ips.get(ip) is None:
+                        new_ips[ip] = []
+                    new_ips[ip].append((division_size, last_block[0], 0, block_numbers))
+                    
+        print(new_ips)
+        
+        n_ips = len(new_ips)
+        
+        format_string += "H"
+        flat_data.append(n_ips)
+        
+        for ip, division_size_dict in new_ips.items():
+            
+            ip_bytes = socket.inet_aton(ip)
+            sets_len = len(division_size_dict)
+            format_string += "BBBBB"
+            flat_data.extend([*ip_bytes, sets_len])
+            
+            for division_size, last_block_size, full_file, block_numbers in division_size_dict:
+
+                format_string += "HHH"
+                flat_data.extend([division_size, last_block_size, full_file])
+
+                if full_file == 0:
+                    format_string += "H"
+                    format_string += "H" * len(block_numbers)
+                    flat_data.append(len(block_numbers))
+                    flat_data.extend(block_numbers)
+                    
+        format_string += "H"
+        flat_data.append(counter)
+                
+        return struct.pack(format_string, *flat_data)
     
     def handle_update_message(self, client, address, counter):
         bytes_read = client.recv(1)
         n_files = struct.unpack("!B", bytes_read)[0]
         
         files = []
-        for file in range(n_files):
+        for _ in range(n_files):
+            bytes_read = client.recv(2)
+            file_hash_length = struct.unpack("!H", bytes_read)[0]
+            bytes_read = client.recv(file_hash_length)            
+            file_hash = struct.unpack("!%ds" % file_hash_length, bytes_read)[0]
+            file_hash_hex = file_hash.hex()
+            
             bytes_read = client.recv(1)
             file_name_length = struct.unpack("!B", bytes_read)[0]
             bytes_read = client.recv(file_name_length)
@@ -144,7 +249,7 @@ class FS_Tracker(Thread):
             n_block_sets = struct.unpack("!B", bytes_read)[0]
             
             block_sets_data = []
-            for block_set in range(n_block_sets):
+            for _ in range(n_block_sets):
                 bytes_read = client.recv(2+2+2)
                 block_size, last_block_size, full_file = struct.unpack("!HHH", bytes_read)
                 
@@ -159,11 +264,11 @@ class FS_Tracker(Thread):
                 
                 block_sets_data.append((block_size, last_block_size, full_file, blocks))
             
-            files.append((file_name, block_sets_data))
+            files.append((file_name, file_hash_hex, block_sets_data))
             
         status = self.db.update_node(address[0], files)  
-        self.send_response(client, status, counter)                   
-
+        self.send_response(client, status, counter)                  
+        
 
 def parse_args():
     try:

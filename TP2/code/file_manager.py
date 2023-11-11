@@ -1,4 +1,5 @@
 import os
+import hashlib
 
 
 class File:
@@ -7,18 +8,31 @@ class File:
         name,
         path=None,
         blocks=None,
-        is_complete=False
+        is_complete=None
     ):
         self.name = name
         self.path = path
         self.blocks = blocks if blocks is not None else {}
-        self.is_complete = set()
+        self.is_complete = is_complete if is_complete is not None else set()
+        self.hash_id = generate_file_hash(path) if path is not None else None
         
     def __str__(self):
-        block_info = "\n".join([f"- Size: {block.size}, Path: {block.path}, Number: {block.number}, IsLast: {block.is_last}" for block_set in self.blocks.values() for block in block_set])
-        return f"File name: {self.name}\nPath: {self.path}\nIsComplete: {self.is_complete}\n\tBlocks:\n{block_info}"
-
-
+        
+        blocks_info = ""
+        for block_size, block_set in self.blocks.items():
+            blocks_info += f"\n\t\tBlock size: {block_size}\n"
+            for block in block_set:
+                blocks_info += block.__str__() + "\n"
+        
+        return """
+            File name: %s
+            Hash: %s
+            Path: %s
+            IsComplete: %s
+            Blocks: %s
+        """ % (self.name, self.hash_id, self.path, self.is_complete, blocks_info)
+    
+    
 class Block:
     def __init__(
         self,
@@ -37,17 +51,29 @@ class Block:
     def __str__(self):
         return f"Block: {self.number}\nSize: {self.size}\nPath: {self.path}\nIs last: {self.is_last}"
 
+    def __str__(self):
+        return """
+            Block: %s
+            Size: %s
+            Is last: %s
+        """ % (self.number, self.size, self.is_last)
+
     def __hash__(self):
         return hash((self.original_division_size, self.size, self.number, self.path, self.is_last))
 
     def __eq__(self, other):
         return self.path == other.path
+    
 
 class File_manager:
     def __init__(self, dir, block_size=1024):
         self.dir = dir
         self.block_size = block_size
         self.files = {}
+        
+    def run(self):
+        self.divide_files()
+        self.scan_files()
         
     def divide_files(self, block_size=None):
         if block_size is None:
@@ -73,7 +99,7 @@ class File_manager:
                         if not block:
                             break
                         
-                        is_last_block = len(block) < block_size
+                        is_last_block = len(block) < block_size or file.tell() == os.path.getsize(file_path)
                         last_size = len(block) if is_last_block else 0
                         
                         block_file_name = f"{block_size}_{block_count}_{last_size}"
@@ -96,6 +122,13 @@ class File_manager:
             return None
         
         return os.path.getsize(file_path)
+    
+    def get_file_hash_by_name(self, file_name):
+        file = self.files.get(file_name)
+        if file is None:
+            return None
+        
+        return file.hash_id
                         
     def scan_files(self):
         blocks_dir = os.path.join(self.dir, "blocks")
@@ -142,13 +175,28 @@ class File_manager:
                     else:
                         file.is_complete.add(block_size)
                 self.files[file_name] = file
-                
+          
+
+def generate_file_hash(file_path, block_size=65536):
+    file_name = os.path.basename(file_path)
+
+    with open(file_path, "rb") as file:
+        hash_object = hashlib.sha1()
+        hash_object.update(file_name.encode("utf-8"))
+        
+        while chunk := file.read(block_size):
+            hash_object.update(chunk)
+            
+        final_hash = hash_object.hexdigest()
+            
+    return final_hash
+      
 
 if __name__ == "__main__":
-    file_manager = File_manager("/home/core/code/fs_nodes_data/fs_node_1", 1024)
-    file_manager.divide_files()
-    file_manager.scan_files()
+    file_manager = File_manager("/home/core/CC/TP2/code/fs_nodes_data/fs_node_1", 1024)
+    file_manager.run()
+    
+    print(file_manager.files)
     
     for file_name, file_instance in file_manager.files.items():
         print(f"\t{file_name}: \n{file_instance}\n")
-    

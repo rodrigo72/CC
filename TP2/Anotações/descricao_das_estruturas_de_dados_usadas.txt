@@ -1,0 +1,150 @@
+
+
+					FILE MANAGER DATA
+Files: file_name => File {
+	name, path, hash,
+	blocks: division_size => set(Block {
+			original_division_size,
+			size, number, path, is_last
+		}),
+	is_complete: set of division_sizes (block_sets that have all blocks)
+}
+
+example: 
+"belo.png" -> File {
+	name: "belo.png",
+	path: "/home/core/code/fs_nodes_data/fs_node_1/files/belo.png"
+	hash: sj289fkjdsbjkdbk1838r9
+	blocks: {
+		1024 -> [(1024, 1024, 1, ..., 0), (1024, 501, 2, ..., 1)]
+		512  -> [(512, 512, 1, ..., 0), (512, 512, 2, ..., 0), (512, 501, 3, ..., 1)] 
+	},
+	"java.png" -> File {...}
+}
+
+
+					DATABASE STRUCTURE
+			Note: i tried to make it as simple as possible
+			(without block_sets and with just one m:n relationship)
+					
+		create table if not exists Node (
+                    ip TEXT(15) not null,
+                    primary key (ip)
+                );
+                
+                create table if not exists File (
+                    hash text(32) not null,
+                    name text(255) not null,
+                    primary key (hash)
+                );
+                
+                create table if not exists Block (
+                    size integer not null,
+                    number integer not null,
+                    division_size integer not null,
+                    is_last integer not null,
+                    File_hash text(32) not null,
+                    primary key (size, number, division_size, File_hash),
+                    foreign key (File_hash) 
+                        references File (hash)
+                    check (size <= division_size)
+                );
+                
+                create table if not exists Node_has_Block (
+                    Node_ip text(25) not null,
+                    Block_size INTEGER NOT NULL,
+                    Block_number INTEGER NOT NULL,
+                    Block_division_size INTEGER NOT NULL,
+                    Block_File_hash text(32) NOT NULL,
+                    primary key 
+                    (Node_ip, Block_size, Block_number, Block_division_size, Block_File_hash),
+                    foreign key (Node_ip) 
+                        references Node (ip),
+                    foreign key 
+                    (Block_size, Block_number, Block_division_size, Block_File_hash) 
+                        references Block (size, number, division_size, File_hash)
+                );
+                
+	Query example:
+	sqlite> select * from node_has_block;
+	Node_ip     Block_size  Block_number  Block_division_size	Block_File_hash                         
+	----------  ----------  ------------  -------------------  ----------------------------------------
+	127.0.0.1   14          1             1024                 090f9f92d538ac85d99c689cf2138cff38bb6b93
+	127.0.0.1   20          1             1024                 3ddde5cfdc54e5693800dfa4f7556417f02eada8
+	127.0.0.1   1024        1             1024                 aa78ceb25b9c144f4a41e5f0196bf4f8ae31447c
+	127.0.0.1   1024        2             1024                 aa78ceb25b9c144f4a41e5f0196bf4f8ae31447c
+	127.0.0.1   1024        3             1024                 aa78ceb25b9c144f4a41e5f0196bf4f8ae31447c
+	127.0.0.1   469         4             1024                 aa78ceb25b9c144f4a41e5f0196bf4f8ae31447c
+
+
+					PROTOCOL STRUCTURE
+
+- FS_Tracker, generic response message
+
+response type 				1 byte
+result status				1 byte
+counter					2 bytes
+
+
+- FS_Node, leave message
+
+resposen type				1 byte
+
+
+- FS_Node, update message
+
+update flag 				1 byte
+nº of files				2 bytes
+
+	file hash length		2 bytes
+	file hash			max 32 bytes
+	
+	file name length		1 byte
+	file name			max 255 bytes
+	
+	nº block sets			1 byte
+	
+		block_size		2 bytes
+		last_block_size		2 bytes
+		is_full == 13		2 bytes
+		
+		block_size		2 bytes
+		last_block_size		2 bytes
+		is_full == 0		2 bytes
+		nº blocks 3		2 bytes
+			1		2 bytes
+			2		2 bytes
+			3		2 bytes
+			
+		
+- FS_Tracker locate message	
+locate flag 				1 byte
+nº of ips				2 bytes
+	ip				15 bytes
+	nº of block sets		1 byte
+	
+		block_size		2 bytes
+		last_block_size		2 bytes
+		is_full	== 13		2 bytes
+		
+		block_size		2 bytes
+		last_block_size		2 bytes
+		is_full == 0 		2 bytes
+		nº blocks 3		2 bytes
+			1		2 bytes
+			2 		2 bytes
+			3		2 bytes
+counter					2 bytes
+
+
+- FS_Node locate message
+
+locate flag				1 byte
+locate type				1 byte
+length					1 or 2 bytes (depending on locate type)
+data					length bytes, max 255 bytes
+		
+
+		
+			
+		

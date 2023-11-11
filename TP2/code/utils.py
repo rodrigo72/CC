@@ -5,9 +5,10 @@ from enum import IntEnum
 class action(IntEnum):
     UPDATE = 0
     LEAVE = 1
-    LOCATE = 2
-    RESPONSE = 3
-    RESPONSE_LOCATE = 4
+    LOCATE_NAME = 2
+    LOCATE_HASH = 3
+    RESPONSE = 4
+    RESPONSE_LOCATE = 5
     
     
 class status(IntEnum):

@@ -51,10 +51,15 @@ class FS_Node:
                 data = struct.unpack("!B", data)[0]
                 if action.RESPONSE.value == data:
                     self.handle_response()
+                elif action.RESPONSE_LOCATE.value == data:
+                    self.handle_locate_response()
                 else:
                     if self.debug:
                         print("Invalid action")
-
+        
+        except socket.timeout:
+            if self.debug:
+                print("[run] Socket timeout")
         except Exception as e:
             if self.debug:
                 print("[run] Error: ", e)
@@ -70,6 +75,54 @@ class FS_Node:
         if self.callback:
             self.callback()
             
+    def handle_locate_response(self):
+        n_ips = struct.unpack("!H", self.socket.recv(2))[0]
+        
+        output = {}  # ip -> (block_size, last_block_size, full_file, [blocks])
+        
+        for _ in range(n_ips):
+            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
+            ip_str = socket.inet_ntoa(bytes(ip_bytes))
+            
+            n_sets = struct.unpack("!B", self.socket.recv(1))[0]
+            
+            for _ in range(n_sets):
+                block_size = struct.unpack("!H", self.socket.recv(2))[0]
+                last_block_size = struct.unpack("!H", self.socket.recv(2))[0]
+                full_file = struct.unpack("!H", self.socket.recv(2))[0]
+                
+                blocks = []
+                if full_file == 0:
+                    n_blocks = struct.unpack("!H", self.socket.recv(2))[0]
+                    for _ in range(n_blocks):
+                        block_number = struct.unpack("!H", self.socket.recv(2))[0]
+                        blocks.append(block_number)
+                        
+                output[ip_str] = (block_size, last_block_size, full_file, blocks)
+                
+        counter = struct.unpack("!H", self.socket.recv(2))[0] 
+        
+        for ip, data in output.items():
+            if data[2] != 0:
+                print(f"""
+                    IPv4 address: {ip}
+                        Division size: {data[0]}
+                        Last block size: {data[1]}
+                        Number of blocks: {data[2]}
+                    """)
+            else:
+                print(f"""
+                    IPv4 address: {ip}
+                        Division size: {data[0]}
+                        Last block size: {data[1]}
+                        Number of blocks: {data[2]}
+                    """)
+            print("\n")
+        print("Counter: ", counter)
+                
+        if self.callback:
+            self.callback()
+                            
     def send_update_message(self):
         encoded_message = self.encode_update_message()
         self.socket.sendall(encoded_message)
@@ -77,16 +130,43 @@ class FS_Node:
     def send_leave_message(self):
         self.socket.send(struct.pack("!B", action.LEAVE.value))
         
-    def send_locate_message(self, file_name):
-        encoded_message = self.encode_locate_message(file_name)
-        self.socket.sendall(encoded_message)
+    def send_locate_message(self, locate_type, data):
+        encoded_message = self.encode_locate_message(locate_type, data)
+        if encoded_message is not None:
+            self.socket.sendall(encoded_message)
+        elif self.callback:
+            self.callback()
         
-    def encode_locate_message(self, file_name):
-        file_name = file_name.encode("utf-8")
-        file_name_len = len(file_name)
-        format_string = "!BB%ds" % file_name_len
-        flat_data = [action.LOCATE.value, file_name_len, file_name]
-        return struct.pack(format_string, *flat_data)
+    def encode_locate_message(self, locate_type, data):
+        
+        if self.debug:
+            print("Locate type: ", locate_type)
+            
+        if locate_type == action.LOCATE_NAME.value:
+            
+            if self.debug:
+                print("Locate by name: ", data)
+            
+            file_name = data.encode("utf-8")
+            file_name_len = len(file_name)
+            format_string = "!BB%ds" % file_name_len
+            flat_data = [locate_type, file_name_len, file_name]
+            return struct.pack(format_string, *flat_data)
+        
+        elif locate_type == action.LOCATE_HASH.value:    
+            
+            if self.debug:
+                print("Locate by hash: ", data)
+                
+            file_hash = bytes.fromhex(data)
+            file_hash_len = len(file_hash)
+            format_string = "!BH%ds" % file_hash_len
+            flat_data = [locate_type, file_hash_len, file_hash]
+            return struct.pack(format_string, *flat_data)
+        else:
+            if self.debug:
+                print("Invalid locate type")
+            return None
         
     def encode_update_message(self):
         files = self.file_manager.files
@@ -95,12 +175,16 @@ class FS_Node:
         flat_data = [action.UPDATE.value, len(files)]
         
         for file in files.values():
+            
+            file_hash = bytes.fromhex(file.hash_id) if file.hash_id else b""
+            file_hash_length = len(file_hash)
+            
             file_name = file.name.encode("utf-8")
             file_name_length = len(file_name)
             n_block_sets = len(file.blocks)
             
-            format_string += "B%dsB" % file_name_length
-            flat_data.extend([file_name_length, file_name, n_block_sets])
+            format_string += "H%dsB%dsB" % (file_hash_length, file_name_length)
+            flat_data.extend([file_hash_length, file_hash, file_name_length, file_name, n_block_sets])
             
             for block_size, block_set in file.blocks.items():
 
@@ -127,11 +211,11 @@ class FS_Node:
                     if block.is_last:
                         last_block_size = block.size
                         
-                format_string += "HHH"
-                flat_data.extend([block_size, last_block_size, len(block_set)])
+                format_string += "HHHH"
+                flat_data.extend([block_size, last_block_size, 0, len(block_set)])
                 format_string += "H" * len(flat_data_aux)
                 flat_data.extend(flat_data_aux)
-                        
+                
         return struct.pack(format_string, *flat_data)
        
             
@@ -167,8 +251,14 @@ class FS_Node_controller:
                 self.wait_for_response()
             elif command == "locate" or command == "lo":
                 file_name = input("Enter file name: ")
+                
+                result = self.node.file_manager.get_file_hash_by_name(file_name)
+                if result is None:
+                    self.node.send_locate_message(action.LOCATE_NAME.value, file_name)
+                else:
+                    self.node.send_locate_message(action.LOCATE_HASH.value, result)
+                
                 print("Locating ...")
-                self.node.send_locate_message(file_name)
                 self.wait_for_response()
             else:
                 print("Invalid command")
@@ -194,7 +284,7 @@ if __name__ == "__main__":
 
     args = parse_args()
     
-    node_dir = "/home/core/code/fs_nodes_data/"
+    node_dir = "/home/core/CC/TP2/code/fs_nodes_data/"
     if args.dir is not None:
         node_dir += args.dir
     else:
@@ -208,8 +298,7 @@ if __name__ == "__main__":
         debug=True,
     )
     
-    fs_node_1.file_manager.divide_files()
-    fs_node_1.file_manager.scan_files()
+    fs_node_1.file_manager.run()
    
     node_controller = FS_Node_controller(fs_node_1)
     node_controller_thread = threading.Thread(target=node_controller.run)
