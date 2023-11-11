@@ -1,192 +1,222 @@
-import os
 import socket
 import threading
-import utils
-from jsonschema import validate
-import pdu
 import struct
+from file_manager import File_manager
+import argparse
+from utils import action, status
 
 
-class fs_node:
+class FS_Node:
     def __init__(
-            self,
-            directory=os.path.join(os.path.dirname(__file__)),
-            port=9090,
-            server_host="127.0.0.1",
-            server_port=9090,
-            block_size=1024,
-            debug=False,
-            buffer_size=1024,
-            callback=None
+        self,
+        dir,
+        server_address,
+        server_port,
+        block_size,
+        debug,
+        callback=None,
+        timeout=60,
     ):
         self.socket = None
-        self.port = port
+        self.dir = dir
+        self.server_address = server_address
         self.server_port = server_port
-        self.server_host = server_host
-        self.directory = directory
-        self.files = {}
         self.block_size = block_size
         self.debug = debug
-        self.buffer_size = buffer_size
-        self.done = False
-        self.json_schemas = utils.json_schemas_provider().get_json_schemas()
+        self.file_manager = File_manager(dir, block_size)
         self.callback = callback
-
-    def read_directory(self):
-        try:
-            for filename in os.listdir(os.path.join(self.directory, "Files")):
-                if os.path.isfile(os.path.join(self.directory, "Files", filename)):
-                    self.save_blocks(filename)
-        except Exception as e:
-            if self.debug:
-                print(e)
-
-    def save_blocks(self, file_name):
-        path = os.path.join(self.directory, "Files", file_name)
-        with open(path, 'rb') as file:
-            file_data = file.read()
-            file_size = len(file_data)
-            block_numbers = []
-
-            output_dir = os.path.join(self.directory, "Blocks", file_name + f"_{self.block_size}")
-            os.makedirs(output_dir, exist_ok=True)
-
-            for j, i in enumerate(range(0, len(file_data), self.block_size)):
-                block_size = min(self.block_size, file_size - i)
-                block_data = file_data[i:i + block_size]
-                block_numbers.append(j)
-
-                block_file_name = f"{file_name}_block_{i}_{i + block_size}.dat"
-                file_path = os.path.join(output_dir, block_file_name)
-
-                with open(file_path, 'wb') as block_file:
-                    block_file.write(block_data)
-
-            last_block_size = file_size % self.block_size
-
-            json_data = {
-                "name": file_name,
-                "blocks": [
-                    {
-                        "size": self.block_size,
-                        "numbers": block_numbers,
-                        "last_block_size": last_block_size if last_block_size != 0 else self.block_size
-                    }
-                ]
-            }
-
-            try:
-                validate(json_data, self.json_schemas["file_info.json"])
-                if self.debug:
-                    print("JSON is valid against the schema.")
-                self.files[file_name] = json_data
-            except Exception as e:
-                if self.debug:
-                    print("JSON is not valid against the schema.")
-                    print(e)
+        self.done = False
+        self.timeout = timeout
 
     def connect_to_fs_tracker(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((self.server_host, self.server_port))
-
+        self.socket.connect((self.server_address, self.server_port))
+        self.socket.settimeout(self.timeout)
+        
     def shutdown(self):
         self.done = True
         if self.socket:
             self.socket.close()
-
-    def send_leave_request(self):
-        pass
-
-    def send_update_message(self):
-        update_message = pdu.pdu_encode(utils.action.UPDATE.value, self.files.values())
-        self.socket.sendall(update_message)
-
-    def send_locate_message(self, file_name):
-        locate_message = pdu.pdu_encode(utils.action.LOCATE.value, file_name)
-        self.socket.sendall(locate_message)
-
+            
     def run(self):
         try:
             self.connect_to_fs_tracker()
 
             while not self.done:
                 data = self.socket.recv(1)
+
                 if not data:
-                    continue
+                    break
+
                 data = struct.unpack("!B", data)[0]
-                match data:
-                    case utils.action.RESPONSE.value:
-                        self.handle_server_response()
-                    case _:
-                        if self.debug:
-                            print("Invalid action")
+                if action.RESPONSE.value == data:
+                    self.handle_response()
+                else:
+                    if self.debug:
+                        print("Invalid action")
+
         except Exception as e:
             if self.debug:
-                print("Error:", e)
+                print("[run] Error: ", e)
         finally:
-            # self.send_leave_message()
             self.shutdown()
-
-    def handle_server_response(self):
+            
+    def handle_response(self):
         bytes_read = self.socket.recv(3)
-        status, counter = struct.unpack("!BH", bytes_read)
-
-        print(utils.status(status).name, counter)
-
+        result_status, counter = struct.unpack("!BH", bytes_read)
+        
+        print(status(result_status).name, counter)
+        
         if self.callback:
             self.callback()
+            
+    def send_update_message(self):
+        encoded_message = self.encode_update_message()
+        self.socket.sendall(encoded_message)
+        
+    def send_leave_message(self):
+        self.socket.send(struct.pack("!B", action.LEAVE.value))
+        
+    def send_locate_message(self, file_name):
+        encoded_message = self.encode_locate_message(file_name)
+        self.socket.sendall(encoded_message)
+        
+    def encode_locate_message(self, file_name):
+        file_name = file_name.encode("utf-8")
+        file_name_len = len(file_name)
+        format_string = "!BB%ds" % file_name_len
+        flat_data = [action.LOCATE.value, file_name_len, file_name]
+        return struct.pack(format_string, *flat_data)
+        
+    def encode_update_message(self):
+        files = self.file_manager.files
+        
+        format_string = "!BB"
+        flat_data = [action.UPDATE.value, len(files)]
+        
+        for file in files.values():
+            file_name = file.name.encode("utf-8")
+            file_name_length = len(file_name)
+            n_block_sets = len(file.blocks)
+            
+            format_string += "B%dsB" % file_name_length
+            flat_data.extend([file_name_length, file_name, n_block_sets])
+            
+            for block_size, block_set in file.blocks.items():
 
-
-class fs_node_controller:
+                flat_data_aux = []
+                last_block_size = block_size
+                
+                if block_size in file.is_complete:
+                    
+                    break_flag = False
+                    for block in block_set:
+                        if block.is_last:
+                            format_string += "HHH"
+                            flat_data.extend([block_size, block.size, len(block_set)])
+                            break_flag = True
+                            break;
+                
+                if break_flag:
+                    break
+                    
+                flat_data_aux = []
+                last_block_size = block_size
+                for block in block_set:
+                    flat_data_aux.append(block.number)
+                    if block.is_last:
+                        last_block_size = block.size
+                        
+                format_string += "HHH"
+                flat_data.extend([block_size, last_block_size, len(block_set)])
+                format_string += "H" * len(flat_data_aux)
+                flat_data.extend(flat_data_aux)
+                        
+        return struct.pack(format_string, *flat_data)
+       
+            
+class FS_Node_controller:
     def __init__(self, node):
         self.response_event = threading.Event()
         self.node = node
         self.done = False
-
+        
     def set_response_event(self):
         self.response_event.set()
-
+        
     def reset_response_event(self):
         self.response_event.clear()
-
+        
     def wait_for_response(self):
         self.response_event.wait()
         self.reset_response_event()
-
+        
     def run(self):
         while not self.done:
             command = input("Enter a command: ")
-            if command == "exit" or command == "e":
+            
+            if command == "leave" or command == "l":
+                print("Leaving ...")
                 self.done = True
-                self.node.shutdown()
-            elif command == "leave" or command == "l":
-                self.node.send_leave_request()
+                self.node.send_leave_message()
                 self.wait_for_response()
+                self.node.shutdown()
             elif command == "update" or command == "u":
+                print("Updating ...")
                 self.node.send_update_message()
                 self.wait_for_response()
             elif command == "locate" or command == "lo":
-                file_name = input("Enter a file name: ")
+                file_name = input("Enter file name: ")
+                print("Locating ...")
                 self.node.send_locate_message(file_name)
                 self.wait_for_response()
             else:
                 print("Invalid command")
+  
 
-
+def parse_args():
+    try:
+        parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
+        parser.add_argument('--port', type=int, default=8080, help='Port to bind the server to')
+        parser.add_argument('--address', '-a', type=str, default=None, help='Host IP address to bind the server to')
+        parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
+        parser.add_argument('--block_size', '-b', type=int, default=1024, help='Block size')
+        parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
+        args = parser.parse_args()
+    
+        return args
+    except argparse.ArgumentError as e:
+        print(f"Error parsing command line arguments: {e}")
+        return
+              
+                
 if __name__ == "__main__":
-    node_1 = fs_node(
-        directory="nodes\\fs_node_1",
+
+    args = parse_args()
+    
+    node_dir = "/home/core/code/fs_nodes_data/"
+    if args.dir is not None:
+        node_dir += args.dir
+    else:
+        node_dir += "fs_node_1"
+        
+    fs_node_1 = FS_Node(
+        dir=node_dir,
+        server_address=args.address,
+        server_port=args.port,
+        block_size=1024,
         debug=True,
-        server_host="127.0.0.1",
-        port=9090
     )
-    node_1.read_directory()
-
-    node_1_controller = fs_node_controller(node_1)
-    node_1_controller_thread = threading.Thread(target=node_1_controller.run)
-    node_1_controller_thread.start()
-
-    node_1.callback = node_1_controller.set_response_event
-
-    node_1.run()
-    node_1_controller_thread.join()
+    
+    fs_node_1.file_manager.divide_files()
+    fs_node_1.file_manager.scan_files()
+   
+    node_controller = FS_Node_controller(fs_node_1)
+    node_controller_thread = threading.Thread(target=node_controller.run)
+    node_controller_thread.start()
+    
+    fs_node_1.callback = node_controller.set_response_event
+    
+    fs_node_1.run()
+    node_controller_thread.join()
+    

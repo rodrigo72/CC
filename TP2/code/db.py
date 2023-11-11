@@ -1,154 +1,217 @@
 import sqlite3
 from sqlite3 import Error
 import utils
+import uuid
 
-
-class fs_tracker_db_manager(metaclass=utils.SingletonMeta):
-    def __init__(self, db_file):
+class DB_manager(metaclass=utils.SingletonMeta):
+    def __init__(self, db_file, debug=False):
         self.db_file = db_file
         self.conn = None
         self.cursor = None
+        self.debug = debug
+        
         try:
             self.conn = sqlite3.connect(db_file, check_same_thread=False)
             self.cursor = self.conn.cursor()
+            self.drop_tables()            
+            self.create_tables()
         except Error as e:
             if self.conn:
                 self.conn.close()
-            print("Error: ", e)
-
+            if self.debug:
+                print("[init] Error: ", e)
+                
     def __del__(self):
         if self.conn:
             self.conn.commit()
             self.conn.close()
+        
+    def create_tables(self):
+        try:
+            
+            self.conn.execute("BEGIN")
+            
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS node (
+                    address TEXT(15) PRIMARY KEY NOT NULL,
+                    UNIQUE(address)
+                )
+                """
+            )
+            
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file (
+                    name TEXT NOT NULL,
+                    node_address TEXT(15) NOT NULL,
+                    PRIMARY KEY (name, node_address),
+                    FOREIGN KEY (node_address) REFERENCES node (address)
+                    ON DELETE CASCADE ON UPDATE CASCADE
+                )
+                """
+            )
 
-    def update_fs_node(self, json_data, ip_address):
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS block_set (
+                    is_complete INTEGER NOT NULL,
+                    block_size INTEGER NOT NULL,
+                    file_name INTEGER NOT NULL,
+                    file_node_address TEXT(15) NOT NULL,
+                    n_blocks INTEGER,
+                    PRIMARY KEY (file_name, file_node_address, is_complete, block_size),
+                    FOREIGN KEY (file_name, file_node_address) REFERENCES file (name, node_address)
+                    ON DELETE NO ACTION ON UPDATE NO ACTION
+                )
+                """
+            )
+            
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS block (
+                    size INTEGER NOT NULL,
+                    number INTEGER NOT NULL,
+                    is_last INTEGER NOT NULL,
+                    block_set_file_name INTEGER NOT NULL,
+                    block_set_file_node_address TEXT(15) NOT NULL,
+                    block_set_is_complete INTEGER NOT NULL,
+                    block_set_block_size INTEGER NOT NULL,
+                    PRIMARY KEY (number, block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size),
+                    FOREIGN KEY (block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size) 
+                        REFERENCES block_set (file_name, file_node_address, is_complete, block_size)
+                )
+                """
+            )
+
+            if self.debug:
+                print("Tables created")
+
+            self.conn.commit()
+        except Error as e:
+            if self.debug:
+                print("[create_tables] Error: ", e)
+            self.conn.rollback()
+            
+    def update_node(self, address, data):
         try:
             self.conn.execute("BEGIN")
-            self.cursor.execute("INSERT OR IGNORE INTO fs_node VALUES (?)", (ip_address,))
-            for file_info in json_data:
-                self._add_file_info(file_info, ip_address)
+            
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO node (address) VALUES (?)
+                """,
+                (address,)
+            )
+            
+            for file in data:
+                file_name, block_set_data = file
+                
+                self.cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO file (name, node_address) VALUES (?, ?)
+                    """,
+                    (file_name, address)
+                )
+                
+                for block_set in block_set_data:
+                    block_size, last_block_size, full_file, blocks = block_set
+                    is_complete = 1 if full_file != 0 else 0
+                    self.cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO block_set (is_complete, block_size, file_name, file_node_address) 
+                            VALUES (?, ?, ?, ?)
+                        """,
+                        (is_complete , block_size, file_name, address)
+                    )
+
+                    if full_file != 0:
+                        i = 1
+                        blocks = sorted(blocks)
+
+                        for i in range(full_file - 1):
+                            self.cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO block (size, number, is_last, block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                                """,
+                                (block_size, i, 0, file_name, address, is_complete, block_size)
+                            )
+
+                        self.cursor.execute(
+                            """
+                            INSERT OR IGNORE INTO block (size, number, is_last, block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size) 
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (last_block_size, i, 1, file_name, address, is_complete, block_size)
+                        )
+                    else:
+                        for block in blocks[:-1]:
+                            self.cursor.execute(
+                                """
+                                INSERT OR IGNORE INTO block (size, number, is_last, block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                                """,
+                                (block_size, block, 0, file_name, address, is_complete, block_size)
+                            )
+                        self.cursor.execute(
+                            """
+                            INSERT OR IGNORE INTO block (size, number, is_last, block_set_file_name, block_set_file_node_address, block_set_is_complete, block_set_block_size)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                            """,
+                            (last_block_size, blocks[-1], 1, file_name, address, is_complete, block_size)
+                        )
+                        
             self.conn.commit()
             return utils.status.SUCCESS.value
         except Error as e:
-            print("Error [update_fs_node]: ", e)
+            if self.debug:
+                print("[update_node] Error: ", e)
             self.conn.rollback()
-            return utils.status.INVALID_REQUEST.value
-
-    def _add_file_info(self, file_info, ip_address):
-        self.cursor.execute("INSERT OR IGNORE INTO file VALUES (?)", (file_info["name"],))
-        keys = []
-        for block_info in file_info["blocks"]:
-            block_size = block_info["size"]
-            last_block_size = block_info["last_block_size"]
-            block_numbers = sorted(block_info["numbers"])
-
-            for block_number in block_numbers[:-1]:
-                offset = block_number * block_size
-                keys.append((block_size, offset))
-                self.cursor.execute(
-                    "INSERT OR IGNORE INTO block VALUES (?, ?, ?, ?, ?)",
-                    (block_number, block_size, offset, file_info["name"], None)
-                )
-
-            offset = block_numbers[-1] * block_size
-            self.cursor.execute(
-                "INSERT OR IGNORE INTO block VALUES (?, ?, ?, ?, ?)",
-                (block_numbers[-1], last_block_size, offset, file_info["name"], block_size)
-            )
-            keys.append((last_block_size, offset))
-
-        for (block_size, offset) in keys:
-            self.cursor.execute(
-                "INSERT OR IGNORE INTO fs_node_block VALUES (?, ?, ?, ?)",
-                (ip_address, block_size, offset, file_info["name"])
-            )
-
+            return utils.status.SERVER_ERROR.value
+        
     def locate_file(self, file_name):
         try:
             self.conn.execute("BEGIN")
-            query1 = "SELECT rowid, ipv4_address FROM fs_node"
+            
+            query = """
+                SELECT *
+                FROM file
+                JOIN block_set ON file.name = block_set.file_name
+                JOIN block ON block_set.file_name = block.block_set_file_name
+                WHERE file.name = (?);
+            """
 
-            query2 = (
-                "SELECT fsnb.block_size, "
-                "GROUP_CONCAT(b.number) AS numbers, "
-                "fsn.ipv4_address AS ips "
-                "FROM fs_node_block fsnb "
-                "JOIN fs_node fsn ON fsnb.fs_node_ipv4_address = fsn.ipv4_address "
-                "JOIN block b ON fsnb.block_size = b.size AND fsnb.block_offset = b.offset "
-                "AND fsnb.block_file_name = b.file_name "
-                "WHERE b.file_name = (?) AND b.original_division_size IS NULL "
-                "GROUP BY fsnb.block_size, fsn.ipv4_address"
-            )
-
-            query3 = (
-                "SELECT fsnb.block_size, "
-                "GROUP_CONCAT(b.number || ',' || b.original_division_size) AS numbers, "
-                "fsn.ipv4_address AS ips "
-                "FROM fs_node_block fsnb "
-                "JOIN fs_node fsn ON fsnb.fs_node_ipv4_address = fsn.ipv4_address "
-                "JOIN block b ON fsnb.block_size = b.size AND fsnb.block_offset = b.offset "
-                "AND fsnb.block_file_name = b.file_name "
-                "WHERE b.file_name = (?) AND b.original_division_size IS NOT NULL "
-                "GROUP BY fsnb.block_size, fsn.ipv4_address"
-            )
-
-            self.cursor.execute(query1)
-            addresses = self.cursor.fetchall()
-            self.cursor.execute(query2, (file_name,))
-            result1 = self.cursor.fetchall()
-            self.cursor.execute(query3, (file_name,))
-            result2 = self.cursor.fetchall()
+            self.cursor.execute(query, (file_name,))
+            results = self.cursor.fetchall()
+            print(results)
+                
             self.conn.commit()
-            return addresses, result1, result2
         except Error as e:
-            print("Error [locate_file]: ", e)
+            if self.debug:
+                print("[locate_file] Error: ", e)
             self.conn.rollback()
-            return None
-
-    def delete_from_all_tables(self):
+        
+    def drop_tables(self):
         try:
             self.conn.execute("BEGIN")
-            self.cursor.execute("DELETE FROM fs_node")
-            self.cursor.execute("DELETE FROM file")
-            self.cursor.execute("DELETE FROM block")
-            self.cursor.execute("DELETE FROM fs_node_block")
+            
+            tables_to_clear = ["node", "file", "block_set", "block"]
+            
+            for table in tables_to_clear:
+                self.cursor.execute(
+                    """
+                    DROP TABLE IF EXISTS %s
+                    """ % table
+                )
+            
             self.conn.commit()
         except Error as e:
-            print("Error [delete_from_all_tables]: ", e)
+            if self.debug:
+                print("[clear_tables] Error: ", e)
             self.conn.rollback()
 
-
-if __name__ == "__main__":
-    db = fs_tracker_db_manager("FS_Tracker.sqlite")
-
-    files_info = [
-        {
-            "name": "belo.jpg",
-            "blocks": [
-                {
-                    "size": 1024,
-                    "last_block_size": 210,
-                    "numbers": [1, 2, 3, 4, 5],
-                },
-                {
-                    "size": 2048,
-                    "last_block_size": 1021,
-                    "numbers": [1, 2, 3, 4, 5, 6, 10],
-                }
-            ],
-        },
-        {
-            "name": "java.png",
-            "blocks": [
-                {
-                    "size": 1024,
-                    "last_block_size": 21,
-                    "numbers": [1, 2, 3, 4, 20, 21, 22, 23, 24, 25]
-                }
-            ]
-        }
-    ]
-
-    address = '112.1.1.1'
-    db.update_fs_node(files_info, address)
-    # db.delete_from_all_tables()
+if __name__ == '__main__':
+    print("Hello World!")
+    db = DB_manager("db.sqlite3")
+    db.create_tables()
