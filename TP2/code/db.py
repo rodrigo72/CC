@@ -186,7 +186,7 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.conn.execute("BEGIN")
                         
             query = """
-                SELECT NB.Node_ip, B.size, B.number, B.division_size, B.is_last
+                SELECT NB.Node_ip, B.size, B.number, B.division_size, B.is_last, B.File_hash
                 FROM Node_has_Block AS NB
                 JOIN Block AS B ON NB.Block_size = B.size
                                 AND NB.Block_number = B.number

@@ -110,11 +110,14 @@ class FS_Tracker(Thread):
         return False
     
     def handle_locate_message(self, client, address, counter, locate_type):
-        if self.debug:
-            print(datetime.now(), "Received LOCATE")
-            
+
         results = None
+        response = None
+        
         if locate_type == action.LOCATE_NAME.value:
+            
+            if self.debug:
+                print(datetime.now(), "Received LOCATE NAME")
             
             file_name_length = struct.unpack("!B", client.recv(1))[0]
             file_name = struct.unpack(
@@ -122,8 +125,21 @@ class FS_Tracker(Thread):
                 client.recv(file_name_length))[0].decode("utf-8")
             
             results = self.db.locate_file_name(file_name, address[0])
-                        
+            
+            if results is None:
+                self.send_response(client, status.SERVER_ERROR.value, counter)
+                return
+                
+            if len(results) == 0:
+                self.send_response(client, status.NOT_FOUND.value, counter)
+                return
+                
+            response = self.encode_locate_name_response(results, counter)
+                       
         elif locate_type == action.LOCATE_HASH.value:
+            
+            if self.debug:
+                print(datetime.now(), "Received LOCATE HASH")
             
             file_hash_length = struct.unpack("!H", client.recv(2))[0]                    
             file_hash = struct.unpack(
@@ -131,34 +147,143 @@ class FS_Tracker(Thread):
                 client.recv(file_hash_length))[0]
             
             file_hash_hex = file_hash.hex()
-            results = self.db.locate_file_hash(file_hash_hex, address[0])            
-                    
+            results = self.db.locate_file_hash(file_hash_hex, address[0])   
+            
+            if results is None:
+                self.send_response(client, status.SERVER_ERROR.value, counter)
+                return
+                
+            if len(results) == 0:
+                self.send_response(client, status.NOT_FOUND.value, counter)  
+                return
+                
+            response = self.encode_locate_hash_response(results, counter)
+    
         else:
+            if self.debug:
+                print(datetime.now(), "Invalid LOCATE type")
             self.send_response(client, status.INVALID_REQUEST.value, counter)
             return
-        
-        if results is None:
-            self.send_response(client, status.SERVER_ERROR.value, counter)
-            return
-            
-        if len(results) == 0:
-            self.send_response(client, status.NOT_FOUND.value, counter)
-        
-        response = self.encode_locate_response(results, counter)
+                
         if response is None or len(response) == 0:
             self.send_response(client, status.NOT_FOUND.value, counter)
         else:
             client.sendall(response)
-    
-    def encode_locate_response(self, results, counter):
+            
+    def encode_locate_name_response(self, results, counter):
         if self.debug:
-            print(datetime.now(), "Encoding LOCATE response")
+            print(datetime.now(), "Encoding LOCATE NAME response")
             
         if results is None:
             return None
         
         format_string = "!B"
-        flat_data = [action.RESPONSE_LOCATE.value]
+        flat_data = [action.RESPONSE_LOCATE_NAME.value]
+        
+        # hash -> ip -> division_size -> [(block_size, block_number, is_last)]
+        hashes = {}
+        ip_set = set()
+        
+        for result in results:
+            ip, block_size, block_number, division_size, is_last, file_hash = result
+            
+            ip_set.add(ip)
+            
+            if hashes.get(file_hash) is None:
+                hashes[file_hash] = {}
+                
+            if hashes[file_hash].get(ip) is None:
+                hashes[file_hash][ip] = {}
+
+            if hashes[file_hash][ip].get(division_size) is None:
+                hashes[file_hash][ip][division_size] = []
+                
+            hashes[file_hash][ip][division_size].append((block_size, block_number, is_last))
+            
+        # hash -> ip -> division_size -> (division_size, last_block_size, is_full_file, block_numbers)
+        new_hashes = {}
+        
+        for file_hash, ip_dict in hashes.items():            
+            for ip, division_size_dict in ip_dict.items():
+                for division_size, block_list in division_size_dict.items():
+                    
+                    sorted(block_list, key=lambda x: x[1])
+                    
+                    block_list_length = len(block_list)
+                    last_block = block_list[-1]
+                    
+                    if block_list_length == last_block[1]:
+                        if new_hashes.get(file_hash) is None:
+                            new_hashes[file_hash] = {}
+                        if new_hashes[file_hash].get(ip) is None:
+                            new_hashes[file_hash][ip] = []
+                        new_hashes[file_hash][ip].append((division_size, last_block[0], last_block[1], []))
+                        
+                    else:
+                        block_numbers = [block[1] for block in block_list]
+                        
+                        if new_hashes.get(file_hash) is None:
+                            new_hashes[file_hash] = {}
+                        if new_hashes[file_hash].get(ip) is None:
+                            new_hashes[file_hash][ip] = []
+                        new_hashes[file_hash][ip].append((division_size, last_block[0], 0, block_numbers))
+                
+        n_hashes = len(new_hashes)
+        n_ips = len(ip_set)
+        ips_map = {ip: i for i, ip in enumerate(ip_set, start=1)}
+
+        format_string += "H"
+        flat_data.append(n_ips)
+        
+        for ip, _ in ips_map.items():
+            ip_bytes = socket.inet_aton(ip)
+            format_string += "BBBB"
+            flat_data.extend(ip_bytes)
+            
+        format_string += "H"
+        flat_data.append(n_hashes)
+        
+        for file_hash, ip_dict in new_hashes.items():
+            file_hash_bytes = bytes.fromhex(file_hash)
+            file_hash_length = len(file_hash_bytes)
+
+            n_ids = len(ip_dict)
+                        
+            format_string += "B%dsH" % file_hash_length
+            flat_data.extend([file_hash_length, file_hash_bytes, n_ids])
+            
+            for ip, division_size_dict in ip_dict.items():
+                ip_id = ips_map[ip]
+                n_block_sets = len(division_size_dict)
+                format_string += "HB"
+                flat_data.extend([ip_id, n_block_sets])
+                
+                for division_size, last_block_size, full_file, block_numbers in division_size_dict:
+                    format_string += "HHH"
+                    flat_data.extend([division_size, last_block_size, full_file])
+                    
+                    if full_file == 0:
+                        format_string += "H"
+                        flat_data.append(len(block_numbers))
+                        format_string += "H" * len(block_numbers)
+                        flat_data.extend(block_numbers)
+    
+        format_string += "H"
+        flat_data.append(counter)
+            
+        print(format_string, "\n", flat_data)
+                
+        return struct.pack(format_string, *flat_data)
+    
+    def encode_locate_hash_response(self, results, counter):
+        if self.debug:
+            print(datetime.now(), "Encoding LOCATE HASH response")
+            
+        if results is None:
+            return None
+        
+        format_string = "!B"
+        flat_data = [action.RESPONSE_LOCATE_HASH.value]
         
         # ip => (division_size => (block_size, block_number, is_last))
         ips = {}
@@ -197,9 +322,7 @@ class FS_Tracker(Thread):
                     if new_ips.get(ip) is None:
                         new_ips[ip] = []
                     new_ips[ip].append((division_size, last_block[0], 0, block_numbers))
-                    
-        print(new_ips)
-        
+                            
         n_ips = len(new_ips)
         
         format_string += "H"
@@ -225,7 +348,7 @@ class FS_Tracker(Thread):
                     
         format_string += "H"
         flat_data.append(counter)
-                
+        
         return struct.pack(format_string, *flat_data)
     
     def handle_update_message(self, client, address, counter):

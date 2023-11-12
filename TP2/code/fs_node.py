@@ -51,8 +51,10 @@ class FS_Node:
                 data = struct.unpack("!B", data)[0]
                 if action.RESPONSE.value == data:
                     self.handle_response()
-                elif action.RESPONSE_LOCATE.value == data:
-                    self.handle_locate_response()
+                elif action.RESPONSE_LOCATE_HASH.value == data:
+                    self.handle_locate_hash_response()
+                elif action.RESPONSE_LOCATE_NAME.value == data:
+                    self.handle_locate_name_response()
                 else:
                     if self.debug:
                         print("Invalid action")
@@ -75,7 +77,69 @@ class FS_Node:
         if self.callback:
             self.callback()
             
-    def handle_locate_response(self):
+    def handle_locate_name_response(self):
+        
+        n_ips = struct.unpack("!H", self.socket.recv(2))[0]        
+        output = {}  # hash -> (ip, block_size, last_block_size, full_file, [blocks])
+        ips_dict = {}
+        
+        for i in range(n_ips):
+            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
+            ip_str = socket.inet_ntoa(bytes(ip_bytes))
+            ips_dict[i+1] = ip_str
+                        
+        n_hashes = struct.unpack("!H", self.socket.recv(2))[0]
+        
+        for _ in range(n_hashes):
+            file_hash_len = struct.unpack("!B", self.socket.recv(1))[0]
+            file_hash = self.socket.recv(file_hash_len).hex()
+            
+            output[file_hash] = []
+                        
+            n_ips = struct.unpack("!H", self.socket.recv(2))[0]
+                                            
+            for _ in range(n_ips):
+                ip_referece = struct.unpack("!H", self.socket.recv(2))[0]
+                n_block_sets = struct.unpack("!B", self.socket.recv(1))[0]
+                                
+                for _ in range(n_block_sets):
+                    block_size, last_block_size, full_file = struct.unpack("!HHH", self.socket.recv(6))
+                    blocks = []
+
+                    if full_file == 0:
+                        n_blocks = struct.unpack("!H", self.socket.recv(2))[0]
+                        for _ in range(n_blocks):
+                            block_number = struct.unpack("!H", self.socket.recv(2))[0]
+                            blocks.append(block_number)
+                            
+                    output[file_hash].append((ips_dict[ip_referece], block_size, last_block_size, full_file, blocks))
+
+        counter = struct.unpack("!H", self.socket.recv(2))[0]
+        
+        for file_hash, data in output.items():
+            print(f"\tHash: {file_hash}")
+            for ip, block_size, last_block_size, full_file, blocks in data:
+                if full_file != 0:
+                    print(f"""
+                            IPv4 address: {ip}
+                            Division size: {block_size}
+                            Last block size: {last_block_size}
+                            Number of blocks: {full_file}
+                        """)
+                else:
+                    print(f"""
+                            IPv4 address: {ip}
+                            Division size: {block_size}
+                            Last block size: {last_block_size}
+                            Number of blocks: {len(blocks)}
+                        """)
+                print("\n")
+        print("Counter: ", counter)
+        
+        if self.callback:
+            self.callback()
+                        
+    def handle_locate_hash_response(self):
         n_ips = struct.unpack("!H", self.socket.recv(2))[0]
         
         output = {}  # ip -> (block_size, last_block_size, full_file, [blocks])
@@ -85,6 +149,7 @@ class FS_Node:
             ip_str = socket.inet_ntoa(bytes(ip_bytes))
             
             n_sets = struct.unpack("!B", self.socket.recv(1))[0]
+            output[ip_str] = []
             
             for _ in range(n_sets):
                 block_size = struct.unpack("!H", self.socket.recv(2))[0]
@@ -98,26 +163,26 @@ class FS_Node:
                         block_number = struct.unpack("!H", self.socket.recv(2))[0]
                         blocks.append(block_number)
                         
-                output[ip_str] = (block_size, last_block_size, full_file, blocks)
+                output[ip_str].append((block_size, last_block_size, full_file, blocks))
                 
         counter = struct.unpack("!H", self.socket.recv(2))[0] 
         
         for ip, data in output.items():
-            if data[2] != 0:
-                print(f"""
-                    IPv4 address: {ip}
-                        Division size: {data[0]}
-                        Last block size: {data[1]}
-                        Number of blocks: {data[2]}
-                    """)
-            else:
-                print(f"""
-                    IPv4 address: {ip}
-                        Division size: {data[0]}
-                        Last block size: {data[1]}
-                        Number of blocks: {data[2]}
-                    """)
-            print("\n")
+            print(f"\tIPv4 address: {ip}")
+            for block_size, last_block_size, full_file, blocks in data:
+                if full_file != 0:
+                    print(f"""
+                            Division size: {block_size}
+                            Last block size: {last_block_size}
+                            Number of blocks: {full_file}
+                        """)
+                else:
+                    print(f"""
+                            Division size: {block_size}
+                            Last block size: {last_block_size}
+                            Number of blocks: {len(blocks)}
+                        """)
+                print("\n")
         print("Counter: ", counter)
                 
         if self.callback:

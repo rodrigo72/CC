@@ -8,7 +8,8 @@ class action(IntEnum):
     LOCATE_NAME = 2
     LOCATE_HASH = 3
     RESPONSE = 4
-    RESPONSE_LOCATE = 5
+    RESPONSE_LOCATE_HASH = 5
+    RESPONSE_LOCATE_NAME = 6
     
     
 class status(IntEnum):
