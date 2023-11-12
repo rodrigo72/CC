@@ -117,7 +117,7 @@ nº of files				2 bytes
 			3		2 bytes
 			
 		
-- FS_Tracker locate message	
+- FS_Tracker locate hash message	
 locate flag 				1 byte
 nº of ips				2 bytes
 	ip				15 bytes
@@ -137,6 +137,62 @@ nº of ips				2 bytes
 counter					2 bytes
 
 
+- FS_Tracker locate name message
+
+response_locate_name					1 byte
+nº ips 3						2 bytes
+	123.1.1.1 (1)					4 bytes
+	123.2.2.2 (2)					 ...
+	123.3.3.3 (3)					 ...
+nº hashes 2						2 bytes
+	length 15
+	hash "asd6asd6asd6asd"				max 32 bytes
+	nº ips 2					2 bytes
+		(2)					2 bytes
+		n_block_sets 1				1 byte
+			block_size 1024			2 bytes
+			last_block_size 478		2 bytes
+			full_file 12			2 bytes
+		(1)
+		n_block_sets 1				1 byte			
+			block_size 512			2 bytes
+			last_block_size 400		2 bytes
+			full_file 0			2 bytes
+			n_blocks 3			2 bytes
+				1			2 bytes
+				2			 ...
+				3			 ...
+	hash "qwe7qwe7qwe7qwe"				max 32 bytes
+	nº ips 1					2 bytes
+		(3)					2 bytes
+		n_block_sets 1				1 byte
+			block_size 1024			2 bytes
+			last_block_size 102		2 bytes
+			full_file 30			2 bytes
+counter							2 bytes
+
+More generic:
+locate flag						1 byte
+nº ips							2 bytes
+	ip						4 bytes
+nº hashes						2 bytes
+	hash_len					1 bytes
+	hash						max 32 bytes
+	nº ips						2 bytes
+		ip					2 bytes (references ips above)
+		n_block_sets				1 byte
+		
+			block_size			2 bytes
+			last_block_size			2 bytes
+			full_file != 0			2 bytes
+			
+			block_size			2 bytes
+			last_block_size			2 bytes
+			full_file == 0			2 bytes
+			n_blocks			2 bytes
+				block_number		2 bytes
+
+
 - FS_Node locate message
 
 locate flag				1 byte
@@ -147,4 +203,3 @@ data					length bytes, max 255 bytes
 
 		
 			
-		
