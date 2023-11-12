@@ -4,6 +4,7 @@ import struct
 from file_manager import File_manager
 import argparse
 from utils import action, status
+import sys
 
 
 class FS_Node:
@@ -301,7 +302,7 @@ class FS_Node_controller:
         self.reset_response_event()
         
     def run(self):
-        while not self.done:
+        while not self.done and not self.node.done:
             command = input("Enter a command: ")
             
             if command == "leave" or command == "l":

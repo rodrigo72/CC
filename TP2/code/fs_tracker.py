@@ -15,7 +15,7 @@ class FS_Tracker(Thread):
         port=9090,
         host=None,
         max_connections=5,
-        timeout=60*10,
+        timeout=60*5,
         debug=False,
     ):
         self.socket = None
