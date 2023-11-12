@@ -88,7 +88,8 @@ class FS_Tracker(Thread):
                 
                 if decoded_byte == action.LEAVE.value:
                     print(datetime.now(), "Received LEAVE")
-                    self.send_response(client, status.SUCCESS.value, counter)
+                    result = self.db.delete_node(address[0])
+                    self.send_response(client, result, counter)
                     break
                 elif decoded_byte == action.UPDATE.value:
                     self.handle_update_message(client, address, counter)
@@ -270,9 +271,7 @@ class FS_Tracker(Thread):
     
         format_string += "H"
         flat_data.append(counter)
-            
-        print(format_string, "\n", flat_data)
-                
+                            
         return struct.pack(format_string, *flat_data)
     
     def encode_locate_hash_response(self, results, counter):

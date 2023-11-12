@@ -92,6 +92,48 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 print("[create_tables] Error: ", e)
             self.conn.rollback()
             
+    def delete_node(self, address):
+        try:
+            self.conn.execute("BEGIN")
+            
+            self.cursor.execute(
+                """
+                DELETE FROM Node
+                WHERE ip = (?)
+                """,
+                (address,)
+            )
+            
+            self.cursor.execute(
+                """
+                DELETE FROM Node_has_Block
+                WHERE Node_ip = (?)
+                """,
+                (address,)
+            )
+            
+            self.cursor.execute(
+                """
+                DELETE FROM Block AS B
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM Node_has_Block AS NB
+                    WHERE NB.Block_size = B.size
+                        AND NB.Block_number = B.number
+                        AND NB.Block_division_size = B.division_size
+                        AND NB.Block_File_hash = B.File_hash
+                )
+                """
+            )
+            
+            self.conn.commit()
+            return utils.status.SUCCESS.value
+        except Error as e:
+            if self.debug:
+                print("[delete_node] Error: ", e)
+            self.conn.rollback()
+            return utils.status.SERVER_ERROR.value
+            
     def insert_block_data(self, address, size, number, division_size, is_last, file_hash):
         insert_block_query = """
             INSERT OR IGNORE INTO Block (size, number, division_size, is_last, File_hash) 

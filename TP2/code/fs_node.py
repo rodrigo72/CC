@@ -15,7 +15,7 @@ class FS_Node:
         block_size,
         debug,
         callback=None,
-        timeout=60,
+        timeout=60*5,
     ):
         self.socket = None
         self.dir = dir
@@ -349,17 +349,12 @@ if __name__ == "__main__":
 
     args = parse_args()
     
-    node_dir = "/home/core/CC/TP2/code/fs_nodes_data/"
-    if args.dir is not None:
-        node_dir += args.dir
-    else:
-        node_dir += "fs_node_1"
         
     fs_node_1 = FS_Node(
-        dir=node_dir,
+        dir=args.dir,
         server_address=args.address,
         server_port=args.port,
-        block_size=1024,
+        block_size=args.block_size,
         debug=True,
     )
     
