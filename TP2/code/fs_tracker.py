@@ -97,7 +97,9 @@ class FS_Tracker(Thread):
                     self.handle_locate_message(client, address, counter, decoded_byte)
                 else:
                     break
-
+                
+            except KeyboardInterrupt:
+                break
             except Exception as e:
                 if self.debug:
                     print("[listen_to_client]", datetime.now(), e, address, '\n')
@@ -397,13 +399,8 @@ def parse_args():
         parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
         parser.add_argument('--port', '-p', type=int, default=8080, help='Port to bind the server to')
         parser.add_argument('--host', '-H', type=str, default=None, help='Host IP address to bind the server to')
-
-        args = parser.parse_args()
     
-        if args.host is None or args.port is None:
-            parser.error("Both --host and --port must be provided.")
-    
-        return args
+        return parser.parse_args()
     except argparse.ArgumentError as e:
         print(f"Error parsing command line arguments: {e}")
         sys.exit(1)
@@ -414,5 +411,5 @@ if __name__ == "__main__":
     
     args = parse_args()
         
-    tracker = FS_Tracker(db="db.sqlite3", port=args.port, host=args.host, debug=True)
+    tracker = FS_Tracker(db="db.sqlite3", port=args.port, host="", debug=True)
     tracker.run()

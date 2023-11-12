@@ -256,9 +256,9 @@ class FS_Node:
                 flat_data_aux = []
                 last_block_size = block_size
                 
+                break_flag = False
                 if block_size in file.is_complete:
                     
-                    break_flag = False
                     for block in block_set:
                         if block.is_last:
                             format_string += "HHH"
