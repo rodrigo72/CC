@@ -26,6 +26,8 @@ class FS_Tracker(Thread):
         self.timeout = timeout
         self.debug = debug
         self.clients = []
+        self.threads = []
+        self.done = False
         Thread.__init__(self)    
  
     def run(self):
@@ -44,7 +46,7 @@ class FS_Tracker(Thread):
         if self.debug:
             print(datetime.now(), "Server socket listening for connections")
 
-        while True:
+        while not self.done:
             client, address = self.socket.accept()
             self.clients.append(client)
             client.settimeout(self.timeout)
@@ -52,10 +54,16 @@ class FS_Tracker(Thread):
             if self.debug:
                 print(datetime.now(), "Client connected", address)
 
-            Thread(
+            thread = Thread(
                 target=self.listen_to_client,
                 args=(client, address)
-            ).start()
+            )
+            
+            thread.start()
+            self.threads.append(thread)
+
+    def stop(self):
+        self.done = True
             
     def send_response(self, client, status, counter):
         if self.debug:
@@ -98,13 +106,12 @@ class FS_Tracker(Thread):
                 else:
                     break
                 
-            except KeyboardInterrupt:
-                break
             except Exception as e:
                 if self.debug:
                     print("[listen_to_client]", datetime.now(), e, address, '\n')
                 break
-
+            
+        self.db.delete_node(address[0])
         client.close()
 
         if self.debug:
@@ -262,7 +269,7 @@ class FS_Tracker(Thread):
                 flat_data.extend([ip_id, n_block_sets])
                 
                 for division_size, last_block_size, full_file, block_numbers in division_size_dict:
-                    format_string += "HHH"
+                    format_string += "LLH"
                     flat_data.extend([division_size, last_block_size, full_file])
                     
                     if full_file == 0:
@@ -338,7 +345,7 @@ class FS_Tracker(Thread):
             
             for division_size, last_block_size, full_file, block_numbers in division_size_dict:
 
-                format_string += "HHH"
+                format_string += "LLH"
                 flat_data.extend([division_size, last_block_size, full_file])
 
                 if full_file == 0:
@@ -374,8 +381,8 @@ class FS_Tracker(Thread):
             
             block_sets_data = []
             for _ in range(n_block_sets):
-                bytes_read = client.recv(2+2+2)
-                block_size, last_block_size, full_file = struct.unpack("!HHH", bytes_read)
+                bytes_read = client.recv(4+4+2)
+                block_size, last_block_size, full_file = struct.unpack("!LLH", bytes_read)
                 
                 blocks = []
                 if (full_file == 0):
@@ -405,6 +412,7 @@ def parse_args():
         print(f"Error parsing command line arguments: {e}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
     file_name = os.path.basename(__file__)
     print(f"Running {file_name}")
@@ -412,4 +420,9 @@ if __name__ == "__main__":
     args = parse_args()
         
     tracker = FS_Tracker(db="db.sqlite3", port=args.port, host="", debug=True)
-    tracker.run()
+    
+    try:
+        tracker.run()
+    except KeyboardInterrupt:
+        print("Exiting ...")
+        tracker.stop()

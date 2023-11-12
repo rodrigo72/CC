@@ -38,6 +38,7 @@ class FS_Node:
         self.done = True
         if self.socket:
             self.socket.close()
+        self.file_manager.reset_block_dir()
             
     def run(self):
         try:
@@ -104,7 +105,7 @@ class FS_Node:
                 n_block_sets = struct.unpack("!B", self.socket.recv(1))[0]
                                 
                 for _ in range(n_block_sets):
-                    block_size, last_block_size, full_file = struct.unpack("!HHH", self.socket.recv(6))
+                    block_size, last_block_size, full_file = struct.unpack("!LLH", self.socket.recv(4+4+2))
                     blocks = []
 
                     if full_file == 0:
@@ -153,8 +154,8 @@ class FS_Node:
             output[ip_str] = []
             
             for _ in range(n_sets):
-                block_size = struct.unpack("!H", self.socket.recv(2))[0]
-                last_block_size = struct.unpack("!H", self.socket.recv(2))[0]
+                block_size = struct.unpack("!L", self.socket.recv(4))[0]
+                last_block_size = struct.unpack("!L", self.socket.recv(4))[0]
                 full_file = struct.unpack("!H", self.socket.recv(2))[0]
                 
                 blocks = []
@@ -262,7 +263,7 @@ class FS_Node:
                     
                     for block in block_set:
                         if block.is_last:
-                            format_string += "HHH"
+                            format_string += "LLH"
                             flat_data.extend([block_size, block.size, len(block_set)])
                             break_flag = True
                             break;
@@ -277,7 +278,7 @@ class FS_Node:
                     if block.is_last:
                         last_block_size = block.size
                         
-                format_string += "HHHH"
+                format_string += "LLHH"
                 flat_data.extend([block_size, last_block_size, 0, len(block_set)])
                 format_string += "H" * len(flat_data_aux)
                 flat_data.extend(flat_data_aux)
@@ -302,40 +303,47 @@ class FS_Node_controller:
         self.reset_response_event()
         
     def run(self):
-        while not self.done and not self.node.done:
-            command = input("Enter a command: ")
-            
-            if command == "leave" or command == "l":
-                print("Leaving ...")
-                self.done = True
-                self.node.send_leave_message()
-                self.wait_for_response()
-                self.node.shutdown()
-            elif command == "update" or command == "u":
-                print("Updating ...")
-                self.node.send_update_message()
-                self.wait_for_response()
-            elif command == "locate" or command == "lo":
-                file_name = input("Enter file name: ")
+        try:
+            while not self.done and not self.node.done:
+                command = input("Enter a command: ")
                 
-                result = self.node.file_manager.get_file_hash_by_name(file_name)
-                if result is None:
-                    self.node.send_locate_message(action.LOCATE_NAME.value, file_name)
+                if self.done:
+                    break
+                
+                if command == "leave" or command == "l":
+                    print("Leaving ...")
+                    self.done = True
+                    self.node.send_leave_message()
+                    self.wait_for_response()
+                    self.node.shutdown()
+                elif command == "update" or command == "u":
+                    print("Updating ...")
+                    self.node.send_update_message()
+                    self.wait_for_response()
+                elif command == "locate" or command == "lo":
+                    file_name = input("Enter file name: ")
+                    
+                    result = self.node.file_manager.get_file_hash_by_name(file_name)
+                    if result is None:
+                        self.node.send_locate_message(action.LOCATE_NAME.value, file_name)
+                    else:
+                        self.node.send_locate_message(action.LOCATE_HASH.value, result)
+                    
+                    print("Locating ...")
+                    self.wait_for_response()
                 else:
-                    self.node.send_locate_message(action.LOCATE_HASH.value, result)
-                
-                print("Locating ...")
-                self.wait_for_response()
-            else:
-                print("Invalid command")
+                    print("Invalid command")
+        except KeyboardInterrupt:
+            print("[fs_node_controller] Keyboard interrupt")
+            self.done = True
   
 
 def parse_args():
     try:
         parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
-        parser.add_argument('--port', type=int, default=8080, help='Port to bind the server to')
+        parser.add_argument('--port', '-p', type=int, default=8080, help='Port to bind the server to')
         parser.add_argument('--address', '-a', type=str, default=None, help='Host IP address to bind the server to')
-        parser.add_argument('--debug', '-d', action='store_true', help='Enable debug mode')
+        parser.add_argument('--debug', '-d', type=bool, default=True, help='Enable debug mode')
         parser.add_argument('--block_size', '-b', type=int, default=1024, help='Block size')
         parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
         args = parser.parse_args()
@@ -350,23 +358,27 @@ if __name__ == "__main__":
 
     args = parse_args()
     
-        
     fs_node_1 = FS_Node(
         dir=args.dir,
         server_address=args.address,
         server_port=args.port,
         block_size=args.block_size,
-        debug=True,
+        debug=args.debug,
     )
     
     fs_node_1.file_manager.run()
-   
+
     node_controller = FS_Node_controller(fs_node_1)
     node_controller_thread = threading.Thread(target=node_controller.run)
     node_controller_thread.start()
     
     fs_node_1.callback = node_controller.set_response_event
     
-    fs_node_1.run()
-    node_controller_thread.join()
+    try:
+        fs_node_1.run()
+    except KeyboardInterrupt:
+        print("[main] Keyboard interrupt")
+        fs_node_1.shutdown()
+        node_controller.done = True
+        node_controller_thread.join()
     
