@@ -138,7 +138,7 @@ class File_manager:
             file_blocks_dir_path = os.path.join(blocks_dir, file_blocks_dir_name)
             
             if os.path.isdir(file_blocks_dir_path):
-                file_name, block_size = file_blocks_dir_name.split("_")
+                file_name, block_size = file_blocks_dir_name.rsplit('_', 1)
                 block_size = int(block_size)
                 
                 file = File(file_name, self.get_file_path(file_name))
