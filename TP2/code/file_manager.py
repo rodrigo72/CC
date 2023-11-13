@@ -183,7 +183,8 @@ class File_manager:
             shutil.rmtree(blocks_dir)
             os.makedirs(blocks_dir)
         except Exception as e:
-            print(f"Error removing {blocks_dir}: {e}")
+            pass
+            # print(f"Error removing {blocks_dir}: {e}")
           
 
 def generate_file_hash(file_path, block_size=65536):

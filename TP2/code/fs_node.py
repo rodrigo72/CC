@@ -105,7 +105,7 @@ class FS_Node:
                 n_block_sets = struct.unpack("!B", self.socket.recv(1))[0]
                                 
                 for _ in range(n_block_sets):
-                    block_size, last_block_size, full_file = struct.unpack("!LLH", self.socket.recv(4+4+2))
+                    block_size, last_block_size, full_file = struct.unpack("!HHH", self.socket.recv(2+2+2))
                     blocks = []
 
                     if full_file == 0:
@@ -154,8 +154,8 @@ class FS_Node:
             output[ip_str] = []
             
             for _ in range(n_sets):
-                block_size = struct.unpack("!L", self.socket.recv(4))[0]
-                last_block_size = struct.unpack("!L", self.socket.recv(4))[0]
+                block_size = struct.unpack("!H", self.socket.recv(2))[0]
+                last_block_size = struct.unpack("!H", self.socket.recv(2))[0]
                 full_file = struct.unpack("!H", self.socket.recv(2))[0]
                 
                 blocks = []
@@ -263,7 +263,7 @@ class FS_Node:
                     
                     for block in block_set:
                         if block.is_last:
-                            format_string += "LLH"
+                            format_string += "HHH"
                             flat_data.extend([block_size, block.size, len(block_set)])
                             break_flag = True
                             break;
@@ -278,7 +278,7 @@ class FS_Node:
                     if block.is_last:
                         last_block_size = block.size
                         
-                format_string += "LLHH"
+                format_string += "HHHH"
                 flat_data.extend([block_size, last_block_size, 0, len(block_set)])
                 format_string += "H" * len(flat_data_aux)
                 flat_data.extend(flat_data_aux)
@@ -347,6 +347,9 @@ def parse_args():
         parser.add_argument('--block_size', '-b', type=int, default=1024, help='Block size')
         parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
         args = parser.parse_args()
+        
+        if args.block_size >= 2**(16):
+            raise argparse.ArgumentError("Block size must be less than 2^(16)")
     
         return args
     except argparse.ArgumentError as e:

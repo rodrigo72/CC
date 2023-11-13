@@ -269,7 +269,7 @@ class FS_Tracker(Thread):
                 flat_data.extend([ip_id, n_block_sets])
                 
                 for division_size, last_block_size, full_file, block_numbers in division_size_dict:
-                    format_string += "LLH"
+                    format_string += "HHH"
                     flat_data.extend([division_size, last_block_size, full_file])
                     
                     if full_file == 0:
@@ -345,7 +345,7 @@ class FS_Tracker(Thread):
             
             for division_size, last_block_size, full_file, block_numbers in division_size_dict:
 
-                format_string += "LLH"
+                format_string += "HHH"
                 flat_data.extend([division_size, last_block_size, full_file])
 
                 if full_file == 0:
@@ -381,8 +381,8 @@ class FS_Tracker(Thread):
             
             block_sets_data = []
             for _ in range(n_block_sets):
-                bytes_read = client.recv(4+4+2)
-                block_size, last_block_size, full_file = struct.unpack("!LLH", bytes_read)
+                bytes_read = client.recv(2+2+2)
+                block_size, last_block_size, full_file = struct.unpack("!HHH", bytes_read)
                 
                 blocks = []
                 if (full_file == 0):
