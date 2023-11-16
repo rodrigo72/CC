@@ -1,7 +1,7 @@
 import sqlite3
 from sqlite3 import Error
 import utils
-import uuid
+
 
 class DB_manager(metaclass=utils.SingletonMeta):
     def __init__(self, db_file, debug=False):
@@ -25,6 +25,10 @@ class DB_manager(metaclass=utils.SingletonMeta):
         if self.conn:
             self.conn.commit()
             self.conn.close()
+            
+    """
+    Create and drop tables; delete node
+    """
         
     def create_tables(self):
         try:
@@ -35,6 +39,7 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 """
                 create table if not exists Node (
                     ip TEXT(15) not null,
+                    status INTEGER not null default 0,
                     primary key (ip)
                 );
                 """
@@ -92,6 +97,25 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 print("[create_tables] Error: ", e)
             self.conn.rollback()
             
+    def drop_tables(self):
+        try:
+            self.conn.execute("BEGIN")
+            
+            tables_to_clear = ["Node", "File", "Node_has_Block", "Block"]
+            
+            for table in tables_to_clear:
+                self.cursor.execute(
+                    """
+                    DROP TABLE IF EXISTS %s
+                    """ % table
+                )
+            
+            self.conn.commit()
+        except Error as e:
+            if self.debug:
+                print("[clear_tables] Error: ", e)
+            self.conn.rollback()
+            
     def delete_node(self, address):
         try:
             self.conn.execute("BEGIN")
@@ -133,8 +157,13 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 print("[delete_node] Error: ", e)
             self.conn.rollback()
             return utils.status.SERVER_ERROR.value
+        
+    """
+    Inserting data
+    """
             
     def insert_block_data(self, address, size, number, division_size, is_last, file_hash):
+                
         insert_block_query = """
             INSERT OR IGNORE INTO Block (size, number, division_size, is_last, File_hash) 
             VALUES (?, ?, ?, ?, ?);
@@ -147,55 +176,129 @@ class DB_manager(metaclass=utils.SingletonMeta):
 
         self.cursor.execute(insert_block_query, (size, number, division_size, is_last, file_hash))
         self.cursor.execute(insert_node_has_block_query, (address, size, number, division_size, file_hash))
-  
-    def update_node(self, address, data):
+    
+    def update_node_full_files(self, address, data):
         try:
             self.conn.execute("BEGIN")
             
             self.cursor.execute(
                 """
                 INSERT OR IGNORE INTO Node (ip) VALUES (?)
-                """,
+                """, 
                 (address,)
             )
             
             for file in data:
-                file_name, file_hash, block_set_data = file
-                
+                file_hash, file_name, block_set_data = file
                 self.cursor.execute(
                     """
                     INSERT OR IGNORE INTO File (hash, name) VALUES (?, ?)
-                    """,
+                    """, 
                     (file_hash, file_name)
                 )
-                                
-                for block_set in block_set_data:
-                    block_size, last_block_size, full_file, blocks = block_set
-                    
-                    if full_file != 0:
-                        i = 1
-                            
-                        for i in range(1, full_file):
-                            self.insert_block_data(address, block_size, i, block_size, 0, file_hash)
-                        
-                        if full_file != 1:
-                            i += 1
-                        
-                        self.insert_block_data(address, last_block_size, i, block_size, 1, file_hash)
 
-                    else:
-                        blocks = sorted(blocks)
-                        for block in blocks[:-1]:
-                            self.insert_block_data(address, block_size, block, block_size, 0, file_hash)
-                        self.insert_block_data(address, last_block_size, blocks[-1], block_size, 1, file_hash)
+                
+                for block_set in block_set_data:
+                    block_size, last_block_size, n_blocks = block_set
+                    i = 1
+                    for i in range(1, n_blocks):
+                        self.insert_block_data(address, block_size, i, block_size, 0, file_hash)
+                        
+                    if n_blocks != 1:
+                        i += 1
+                        
+                    self.insert_block_data(address, last_block_size, i, block_size, 1, file_hash)
             
             self.conn.commit()
             return utils.status.SUCCESS.value
         except Error as e:
             if self.debug:
-                print("[update_node] Error: ", e)
+                print("[update_node_full_files] Error: ", e)
             self.conn.rollback()
             return utils.status.SERVER_ERROR.value
+        
+    def update_node_partial_files(self, address, data):
+        try:
+            self.conn.execute("BEGIN")
+            
+            self.cursor.execute(
+                """
+                INSERT OR IGNORE INTO Node (ip) VALUES (?)
+                """, (address,)
+            )
+            
+            for file in data:
+                file_name, file_hash, block_set_data = file
+                self.cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO File (hash, name) VALUES (?, ?)
+                    """, (file_hash, file_name)
+                )
+                
+                for block_set in block_set_data:
+                    block_size, last_block_size, blocks = block_set
+                    blocks = sorted(blocks)
+                    for block in blocks[:-1]:
+                        self.insert_block_data(address, block_size, block, block_size, 0, file_hash)
+                    self.insert_block_data(address, last_block_size, blocks[-1], block_size, 1, file_hash)
+            
+            self.conn.commit()
+            return utils.status.SUCCESS.value
+        except Error as e:
+            if self.debug:
+                print("[update_node_partial_files] Error: ", e)
+            self.conn.rollback()
+            return utils.status.SERVER_ERROR.value
+        
+    def update_node_status(self, address, status):
+        try:
+            self.conn.execute("BEGIN")
+            
+            self.cursor.execute(
+                """
+                UPDATE Node
+                SET status = (?)
+                WHERE ip = (?)
+                """, (status, address)
+            )
+            
+            self.conn.commit()
+            return utils.status.SUCCESS.value
+        except Error as e:
+            if self.debug:
+                print("[update_node_partial_files] Error: ", e)
+            self.conn.rollback()
+            return utils.status.SERVER_ERROR.value
+        
+    """
+    Querying tables
+    """
+        
+    def get_node_status(self, address):
+        try:
+            self.conn.execute("BEGIN")
+            
+            self.cursor.execute(
+                """
+                SELECT status
+                FROM Node
+                WHERE ip = (?)
+                """, (address,)
+            )
+            
+            result = self.cursor.fetchall()
+            
+            self.conn.commit()
+            
+            if result is None or len(result) == 0:
+                return None, utils.status.NOT_FOUND.value
+                        
+            return result[0][0], utils.status.SUCCESS.value
+        except Error as e:
+            if self.debug:
+                print("[update_node_partial_files] Error: ", e)
+            self.conn.rollback()
+            return None, utils.status.SERVER_ERROR.value
             
     def locate_file_hash(self, file_hash, address):
         try:
@@ -216,59 +319,35 @@ class DB_manager(metaclass=utils.SingletonMeta):
             results = self.cursor.fetchall()
                 
             self.conn.commit()
-            return results
+            return results, utils.status.SUCCESS.value
         except Error as e:
             if self.debug:
                 print("[locate_file] Error: ", e)
             self.conn.rollback()
-            return None
+            return None, utils.status.SERVER_ERROR.value
         
     def locate_file_name(self, file_name, address):
         try:
             self.conn.execute("BEGIN")
                         
             query = """
-                SELECT NB.Node_ip, B.size, B.number, B.division_size, B.is_last, B.File_hash
-                FROM Node_has_Block AS NB
-                JOIN Block AS B ON NB.Block_size = B.size
-                                AND NB.Block_number = B.number
-                                AND NB.Block_division_size = B.division_size
-                                AND NB.Block_File_hash = B.File_hash
-                JOIN File AS F ON B.File_hash = F.hash
-                WHERE F.name = (?) AND NB.Node_ip != (?)
-                ORDER BY NB.Node_ip, B.division_size desc, B.number asc;
+                SELECT distinct NB.Block_File_hash, NB.Node_ip
+                    FROM Node_has_Block AS NB
+                    JOIN File AS F ON NB.Block_File_hash = F.hash
+                    WHERE F.name = (?) AND NB.Node_ip != (?);
             """
-            
+                        
             self.cursor.execute(query, (file_name, address))
             results = self.cursor.fetchall()
-                
+                            
             self.conn.commit()
-            return results
+            return results, utils.status.SUCCESS.value
         except Error as e:
             if self.debug:
                 print("[locate_file] Error: ", e)
             self.conn.rollback()
-            return None
+            return None, utils.status.SERVER_ERROR.value
             
-        
-    def drop_tables(self):
-        try:
-            self.conn.execute("BEGIN")
-            
-            tables_to_clear = ["Node", "File", "Node_has_Block", "Block"]
-            
-            for table in tables_to_clear:
-                self.cursor.execute(
-                    """
-                    DROP TABLE IF EXISTS %s
-                    """ % table
-                )
-            
-            self.conn.commit()
-        except Error as e:
-            if self.debug:
-                print("[clear_tables] Error: ", e)
-            self.conn.rollback()
 
 if __name__ == '__main__':
     db = DB_manager("db.sqlite3")

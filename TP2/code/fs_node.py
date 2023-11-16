@@ -3,244 +3,738 @@ import threading
 import struct
 from file_manager import File_manager
 import argparse
-from utils import action, status
-import sys
-
+from utils import action, status, action_udp, Queue_dictionary, join_blocks
+import traceback
+from queue import Queue
+import time
+        
+        
+class UDP_receiver_connection_v2:
+    def __init__(self, host, port, start_seq_num, file_name, division_size, file_manager, debug=False, buffer_size=4):
+        self.host = host
+        self.port = port
+        self.current_seq_num = start_seq_num - 1
+        self.debug = debug
+        self.buffer_size = buffer_size
+        self.seq_nums = set()
+        self.updated = time.time()
+        self.file_name = file_name
+        self.division_size = division_size
+        self.file_manager = file_manager
+        
+    def ack(self, seq_num, block_number, is_last, data):
+        self.updated = time.time()
+        
+        if seq_num > self.current_seq_num and seq_num <= self.current_seq_num + self.buffer_size:
+            self.seq_nums.add(seq_num)
+            keys = sorted(self.seq_nums)
+            for n in keys:
+                if n == self.current_seq_num + 1:
+                    self.current_seq_num += 1  
+                    self.file_manager.save_block(self.file_name, self.division_size, block_number, is_last, data)
+                    self.seq_nums.remove(n)
+                else:
+                    break  # out of order seq_num
+                
+        return self.current_seq_num + 1
+    
+    def reset(self, start_seq_num):
+        self.current_seq_num = start_seq_num - 1
+        self.seq_nums.clear()
+        self.updated = time.time()
+    
 
 class FS_Node:
     def __init__(
         self,
         dir,
         server_address,
-        server_port,
+        port,
         block_size,
         debug,
         callback=None,
         timeout=60*5,
+        udp_timeout=60*5,
+        udp_host="",
+        udp_port=9090,
+        udp_max_buffer_size=1400,
+        udp_receiver_window_size=4,
+        udp_sender_window_size=4,
+        udp_receiver_connection_timeout=5,
+        udp_ack_timeout=0.4
     ):
+        # TCP   
         self.socket = None
+        self.udp_socket = None
         self.dir = dir
         self.server_address = server_address
-        self.server_port = server_port
+        self.port = port
         self.block_size = block_size
         self.debug = debug
         self.file_manager = File_manager(dir, block_size)
         self.callback = callback
         self.done = False
         self.timeout = timeout
-
-    def connect_to_fs_tracker(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((self.server_address, self.server_port))
-        self.socket.settimeout(self.timeout)
+        self.response_queue = Queue()
         
+        # UDP
+        self.udp_max_buffer_size = udp_max_buffer_size
+        self.udp_timeout = udp_timeout
+        self.udp_socket = None
+        self.udp_host = udp_host
+        self.udp_port = udp_port
+        self.udp_thread = threading.Thread(target=self.run_udp_receiver)
+        self.udp_ack_timeout = udp_ack_timeout
+        
+        self.udp_receiver_window_size = udp_receiver_window_size
+        self.udp_sender_window_size = udp_sender_window_size
+        
+        self.udp_ack_queue = Queue_dictionary() # receives acks from other nodes' get requests
+        self.udp_receiver_connections = {}  # sends acks upon received data
+        self.udp_threads = {}  # sends data according to other nodes' get requests
+        
+        self.udp_last_receiver_connections_cleanup = time.time()
+        self.udp_receiver_connection_timeout = udp_receiver_connection_timeout
+        
+        self.lock = threading.Lock()
+        
+    """
+    UDP functions
+    """
+        
+    def create_udp_socket(self):
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
+        self.udp_socket.settimeout(self.udp_timeout)
+        self.udp_socket.bind((self.udp_host, self.udp_port))
+        
+    def run_udp_receiver(self):
+        while not self.done:
+            try:
+                                
+                bytes_read, address = self.udp_socket.recvfrom(self.udp_max_buffer_size)
+                
+                if self.done or not bytes_read:
+                    break        
+                
+                decoded_flag = struct.unpack("!B", bytes_read[0:1])[0]  
+                
+                if self.debug and decoded_flag != action_udp.ACK.value:
+                    print(" >>> Received UDP packet from %s:%d with flag %s" % (address[0], address[1], action_udp(decoded_flag).name))                      
+                
+                # ACK
+                if decoded_flag == action_udp.ACK.value:
+                    
+                    ack_num = struct.unpack("!H", bytes_read[1:3])[0]
+                    self.udp_ack_queue.put(address, ack_num)
+                    
+                    if self.debug:
+                        print(" >>> Received ack from %s:%d with ack_num %d" % (address[0], address[1], ack_num))
+                    
+                # GET FULL FILE REQUEST
+                elif decoded_flag == action_udp.GET_FULL_FILE.value:
+                    
+                    packet = self.decode_udp_get_full_file(bytes_read[1:])
+                    print(" >>> Packet: ", packet)
+                    
+                    file_hash, division_size = packet
+                    
+                    block_numbers = self.file_manager.get_all_block_numbers(file_hash, division_size)
+                    
+                    thread = threading.Thread(
+                        target=self.send_udp_blocks, 
+                        args=(address, file_hash, division_size, block_numbers)
+                    )
+                    
+                    with self.lock:
+                        if self.udp_threads.get(address) is not None:
+                            if self.debug:
+                                print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
+                                print(" >>> Request ignored.")
+                        else:                     
+                            self.udp_threads[address] = thread
+                            thread.start()
+                                            
+                # GET PARTIAL FILE REQUEST
+                elif decoded_flag == action_udp.GET_PARTIAL_FILE.value:
+                    
+                    packet = self.decode_udp_get_partial_file(bytes_read[1:])
+                    print(" >>> Packet: ", packet)
+                    
+                    file_hash, division_size, sequences, blocks = packet
+                    
+                    block_numbers = join_blocks(sequences, blocks)
+                    
+                    thread = threading.Thread(
+                        target=self.send_udp_blocks,
+                        args=(address, file_hash, division_size, block_numbers)
+                    )
+                    
+                    with self.lock:
+                        if self.udp_threads.get(address) is not None:
+                            if self.debug:
+                                print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
+                                print(" >>> Request ignored.")
+                        else:                     
+                            self.udp_threads[address] = thread
+                            thread.start()
+                                        
+                # START DATA
+                elif decoded_flag == action_udp.START_DATA.value:
+                    
+                    packet = self.decode_udp_start_data_message(bytes_read[1:])
+                    print(" >>> Received packet: ", packet[:-1])
+                    self.handle_udp_start_data(address, packet)
+                    
+                # START-END DATA (only one block)
+                elif decoded_flag == action_udp.START_END_DATA.value:
+                    
+                    _, file_name, div_size, block_number, data = self.decode_udp_start_data_message(bytes_read[1:])
+                    print(" >>> Received packet: ", (file_name, div_size, block_number))
+                    self.file_manager.save_block(file_name, div_size, block_number, True, data)
+                    # Received the only packet needed
+                    
+                # DATA
+                elif decoded_flag == action_udp.DATA.value:
+                    
+                    packet = self.decode_udp_data_message(bytes_read[1:])
+                    print(" >>> Received packet: ", packet[:-1])
+                    self.handle_udp_data(address, packet)
+                    
+                # END DATA
+                elif decoded_flag == action_udp.END_DATA.value:
+                    
+                    packet = self.decode_udp_data_message(bytes_read[1:])
+                    print(" >>> Received packet: ", packet[:-1])
+                    self.handle_udp_data(address, packet)
+                         
+                else:
+                    if self.debug:
+                        print(" >>> Invalid action received")
+                        
+                if time.time() - self.udp_last_receiver_connections_cleanup > self.udp_receiver_connection_timeout:
+                    self.udp_receiver_connections_cleanup()
+                         
+            except Exception as e:
+                if self.debug:
+                    print("[run_udp_receiver] Error message:", e)
+                    print("Traceback:")
+                    traceback.print_exc()
+                break
+            
+    def send_udp_blocks(self, address, file_hash, division_size, block_numbers):
+        
+        seq_num = 1
+        is_last = False
+        
+        while not is_last:
+
+            block_number = block_numbers.pop(0)
+            file_name, data = self.file_manager.get_block_with_file_hash(file_hash, division_size, block_number)
+            
+            if len(block_numbers) == 0:
+                is_last = True
+                
+            packet = None
+            if seq_num == 1 and is_last:
+                packet = self.encode_udp_start_data_message(
+                    action_udp.START_END_DATA.value, seq_num, file_name, division_size, block_number,data
+                )
+            elif seq_num == 1:
+                packet = self.encode_udp_start_data_message(
+                    action_udp.START_DATA.value, seq_num, file_name, division_size, block_number, data
+                )
+            elif is_last:
+                packet = self.encode_udp_data_message(
+                    action_udp.END_DATA.value, seq_num, block_number, data
+                )
+            else:
+                packet = self.encode_udp_data_message(
+                    action_udp.DATA.value, seq_num, block_number, data
+                )
+                
+            if self.debug:
+                print(" >>> Sending packet: ", (seq_num, block_number, is_last))
+                
+            self.udp_socket.sendto(packet, address)
+            
+            expected_ack = seq_num + 1
+            self.udp_ack_queue.init(address)
+            
+            while True:
+                received_ack = self.udp_ack_queue.get(address, self.udp_ack_timeout)
+                
+                if received_ack is not None:
+                    
+                    if received_ack == expected_ack:  # last seq num sent
+                        if self.debug:
+                            print(" >>> [ received %d == expected %d ]" % (received_ack, expected_ack))
+                        break
+                    elif received_ack > expected_ack:  # node already received the packet
+                        if self.debug:
+                            print(" >>> [ (out of order) received %d > expected %d ]" % (received_ack, expected_ack))
+                    elif received_ack < expected_ack:  # duplicated packet probably => ignore
+                        if self.debug:
+                            print(" >>> [ (probably duplicated) received %d < expected %d ]" % (received_ack, expected_ack))
+                        continue
+
+                else:
+                    
+                    if self.debug:
+                        print(" >>> (timeout) Resending packet: ", (seq_num, block_number, is_last))
+                    
+                    self.udp_socket.sendto(packet, address)
+            
+            seq_num += 1
+            
+        with self.lock:
+            self.udp_threads.pop(address)
+    
+    """
+    UDP handle functions
+    """
+    
+    def handle_udp_start_data(self, address, packet):
+        seq_num, file_name, division_size, block_number, data = packet
+        if address not in self.udp_receiver_connections:
+            self.udp_receiver_connections[address] = UDP_receiver_connection_v2(
+                address[0],
+                address[1],
+                seq_num,
+                file_name,
+                division_size,
+                self.file_manager,
+                buffer_size=self.udp_receiver_window_size,
+                debug=self.debug
+            )      
+            if self.debug:
+                print(" >>> Created new UDP receiver connection with address %s:%d" % (address[0], address[1]))
+        else:
+            conn = self.udp_receiver_connections[address]
+            conn.reset(seq_num)
+        
+        self.handle_udp_data(address, (seq_num, block_number, data))
+
+    def handle_udp_data(self, address, packet, is_last=False):
+        seq_num, block_number, data = packet
+        
+        if address in self.udp_receiver_connections:
+            conn = self.udp_receiver_connections[address]
+            ack_num = conn.ack(seq_num, block_number, is_last, data)            
+            self.send_udp_ack(address, ack_num)
+    """
+    UDP decode functions
+    """
+    
+    def decode_udp_get_full_file(self, bytes_read):
+        
+        start = 0; end = 1
+        hash_len = struct.unpack("!B", bytes_read[start:end])[0]
+        
+        start = end; end += hash_len
+        file_hash = bytes_read[start:end].hex()
+        
+        start = end; end += 2
+        division_size = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        return file_hash, division_size
+    
+    def decode_udp_get_partial_file(self, bytes_read):
+                
+        start = 0; end = 1
+        hash_len = struct.unpack("!B", bytes_read[start:end])[0]
+                
+        start = end; end += hash_len
+        file_hash = bytes_read[start:end].hex()
+                
+        start = end; end += 2
+        division_size = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 1
+        n_seq = struct.unpack("!B", bytes_read[start:end])[0]
+        sequences = []
+        for _ in range(n_seq):
+            start = end; end += 4
+            first, last = struct.unpack("!HH", bytes_read[start:end])
+            sequences.append((first, last))
+            
+        start = end; end += 2
+        n_blocks = struct.unpack("!H", bytes_read[start:end])[0]
+        blocks = []
+        for _ in range(n_blocks):
+            start = end; end += 2
+            block_number = struct.unpack("!H", bytes_read[start:end])[0]
+            blocks.append(block_number)
+        
+        return file_hash, division_size, sequences, blocks
+    
+    def decode_udp_start_data_message(self, bytes_read):
+            
+            start = 0; end = 2
+            seq_num = struct.unpack("!H", bytes_read[start:end])[0]
+            
+            start = end; end += 1
+            file_name_len = struct.unpack("!B", bytes_read[start:end])[0]
+                        
+            start = end; end += file_name_len
+            file_name = bytes_read[start:end].decode("utf-8")
+            
+            start = end; end += 2
+            division_size = struct.unpack("!H", bytes_read[start:end])[0]
+            
+            start = end; end += 2
+            block_number = struct.unpack("!H", bytes_read[start:end])[0]
+            
+            start = end; end += 4
+            data_len = struct.unpack("!L", bytes_read[start:end])[0]
+            
+            start = end; end += data_len
+            data = bytes_read[start:end]
+            
+            return seq_num, file_name, division_size, block_number, data
+    
+    def decode_udp_data_message(self, bytes_read):
+            
+            start = 0; end = 2
+            seq_num = struct.unpack("!H", bytes_read[start:end])[0]
+            
+            start = end; end += 2
+            block_number = struct.unpack("!H", bytes_read[start:end])[0]
+            
+            start = end; end += 4
+            data_len = struct.unpack("!L", bytes_read[start:end])[0]
+            
+            start = end; end += data_len
+            data = bytes_read[start:end]
+            
+            return seq_num, block_number, data
+    
+    """
+    UDP encode functions
+    """
+    
+    def encode_udp_get_full_file_request(self, file_hash, division_size):
+        
+        file_hash = bytes.fromhex(file_hash)
+        file_hash_length = len(file_hash)
+        
+        format_string = "!BB%dsH" % file_hash_length
+        flat_data = [action_udp.GET_FULL_FILE.value, file_hash_length, file_hash, division_size]
+        
+        return struct.pack(format_string, *flat_data)
+    
+    def encode_udp_get_partial_file_request(self, file_hash, division_size, sequences, blocks):
+            
+        file_hash = bytes.fromhex(file_hash)
+        file_hash_length = len(file_hash)
+        
+        format_string = "!BB%dsH" % file_hash_length
+        flat_data = [action_udp.GET_PARTIAL_FILE.value, file_hash_length, file_hash, division_size]
+        
+        format_string += "B"
+        flat_data.append(len(sequences))
+        
+        format_string += "HH" * len(sequences)
+        flat_data.extend([value for sequence in sequences for value in sequence])
+        
+        format_string += "H"
+        flat_data.append(len(blocks))
+        
+        format_string += "H" * len(blocks)
+        flat_data.extend(blocks)
+        
+        return struct.pack(format_string, *flat_data)
+    
+    def encode_udp_start_data_message(self, flag, seq_num, file_name, division_size, block_number, data):  # data is in bytes
+            
+            file_name = file_name.encode("utf-8")
+            file_name_length = len(file_name)
+            
+            data_len = len(data)
+            format_string = "!BHB%dsHHL%ds" % (file_name_length, data_len)
+            flat_data = [flag, seq_num, file_name_length, file_name, division_size, block_number, data_len, data]
+                        
+            return struct.pack(format_string, *flat_data)
+    
+    def encode_udp_data_message(self, flag, seq_num, block_number, data): # data is bytes
+        
+        format_string = "!BHHL"
+        flat_data = [flag, seq_num, block_number, len(data)]
+        
+        format_string += "%ds" % len(data)
+        flat_data.append(data)
+                
+        return struct.pack(format_string, *flat_data)
+       
+    """
+    UDP send functions
+    """   
+    
+    def send_udp_ack(self, address, ack_num):
+        encoded_data = struct.pack("!BH", action_udp.ACK.value, ack_num)
+        self.udp_socket.sendto(encoded_data, address) 
+        if self.debug:
+            print(" >>> Sending ack with ack_num %d" % (ack_num))
+        
+    def send_udp_get_full_file_request(self, address, file_hash, division_size):
+        encoded_data = self.encode_udp_get_full_file_request(file_hash, division_size)
+        self.udp_socket.sendto(encoded_data, address)
+        
+    def send_udp_get_partial_file_request(self, address, file_hash, division_size, sequences, blocks):
+        encoded_data = self.encode_udp_get_partial_file_request(file_hash, division_size, sequences, blocks)
+        self.udp_socket.sendto(encoded_data, address)
+        
+    def send_udp_start_data_message(self, address, flag, seq_num, file_name, division_size, block_number, data):
+        encoded_data = self.encode_udp_start_data_message(flag, seq_num, file_name, division_size, block_number, data)
+        self.udp_socket.sendto(encoded_data, address)
+        
+    def send_udp_data_message(self, address, flag, seq_num, block_number, data):
+        encoded_data = self.encode_udp_data_message(flag, seq_num, block_number, data)
+        self.udp_socket.sendto(encoded_data, address)
+        
+    """
+    Other UDP functions
+    """
+    
+    def udp_receiver_connections_cleanup(self):
+        if self.debug:
+            print(" >>> Cleaning up UDP receiver connections ...")
+            
+        now = time.time()
+
+        keys = [k for k, v in self.udp_receiver_connections.items()]
+        for address in keys:
+            conn = self.udp_receiver_connections[address]
+            if now - conn.updated > self.udp_receiver_connection_timeout:
+                if self.debug:
+                    print(" >>> Receiver connection with address %s:%d terminated (%.2f old)." % (address[0], address[1], now - conn.updated))
+                del self.udp_receiver_connections[address]
+        self.udp_last_receiver_connections_cleanup = now
+     
+    """
+    Shutdown
+    """
+    
     def shutdown(self):
+        if self.debug:
+            print("Shutting down ...")
+            
         self.done = True
         if self.socket:
             self.socket.close()
-        self.file_manager.reset_block_dir()
             
+        self.udp_socket.sendto(b"", ("", self.port))  # to "unlock" recvfrom
+        self.udp_thread.join()   
+        
+        for thread in self.udp_threads.values():
+            thread.join()
+        
+        if self.udp_socket:
+            self.udp_socket.close()
+            
+            
+        self.file_manager.reset_block_dir()
+    
+    """
+    FS_Tracker functions
+    """
+    
+    def connect_to_fs_tracker(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((self.server_address, self.port))
+        self.socket.settimeout(self.timeout)
+                        
     def run(self):
         try:
             self.connect_to_fs_tracker()
+            self.create_udp_socket()
+            self.udp_thread.start()
 
             while not self.done:
-                data = self.socket.recv(1)
+                bytes_read = self.socket.recv(1)
 
-                if not data:
+                if not bytes_read:
                     break
 
-                data = struct.unpack("!B", data)[0]
-                if action.RESPONSE.value == data:
+                decoded_byte = struct.unpack("!B", bytes_read)[0]
+
+                if action.RESPONSE.value == decoded_byte:
                     self.handle_response()
-                elif action.RESPONSE_LOCATE_HASH.value == data:
+                elif action.RESPONSE_LOCATE_HASH.value == decoded_byte:
                     self.handle_locate_hash_response()
-                elif action.RESPONSE_LOCATE_NAME.value == data:
+                elif action.RESPONSE_LOCATE_NAME.value == decoded_byte:
                     self.handle_locate_name_response()
+                elif action.RESPONSE_CHECK_STATUS.value == decoded_byte:
+                    self.handle_check_status_response()
                 else:
                     if self.debug:
                         print("Invalid action")
+                    break
+                
+                if self.callback:
+                    self.callback()
         
         except socket.timeout:
             if self.debug:
                 print("[run] Socket timeout")
         except Exception as e:
             if self.debug:
-                print("[run] Error: ", e)
+                    print("[run] Error message:", e)
+                    print("Traceback:")
+                    traceback.print_exc()
         finally:
             self.shutdown()
-            
+           
+    """
+    Functions that handle responses from the tracker
+    """       
+     
     def handle_response(self):
-        bytes_read = self.socket.recv(3)
-        result_status, counter = struct.unpack("!BH", bytes_read)
-        
-        print(status(result_status).name, counter)
-        
-        if self.callback:
-            self.callback()
+        result_status, counter = struct.unpack("!BH", self.socket.recv(3))
+        self.response_queue.put((result_status, counter))
             
-    def handle_locate_name_response(self):
-        
-        n_ips = struct.unpack("!H", self.socket.recv(2))[0]        
-        output = {}  # hash -> (ip, block_size, last_block_size, full_file, [blocks])
-        ips_dict = {}
-        
-        for i in range(n_ips):
-            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
-            ip_str = socket.inet_ntoa(bytes(ip_bytes))
-            ips_dict[i+1] = ip_str
-                        
-        n_hashes = struct.unpack("!H", self.socket.recv(2))[0]
-        
-        for _ in range(n_hashes):
-            file_hash_len = struct.unpack("!B", self.socket.recv(1))[0]
-            file_hash = self.socket.recv(file_hash_len).hex()
-            
-            output[file_hash] = []
-                        
-            n_ips = struct.unpack("!H", self.socket.recv(2))[0]
-                                            
-            for _ in range(n_ips):
-                ip_referece = struct.unpack("!H", self.socket.recv(2))[0]
-                n_block_sets = struct.unpack("!B", self.socket.recv(1))[0]
-                                
-                for _ in range(n_block_sets):
-                    block_size, last_block_size, full_file = struct.unpack("!HHH", self.socket.recv(2+2+2))
-                    blocks = []
-
-                    if full_file == 0:
-                        n_blocks = struct.unpack("!H", self.socket.recv(2))[0]
-                        for _ in range(n_blocks):
-                            block_number = struct.unpack("!H", self.socket.recv(2))[0]
-                            blocks.append(block_number)
-                            
-                    output[file_hash].append((ips_dict[ip_referece], block_size, last_block_size, full_file, blocks))
-
-        counter = struct.unpack("!H", self.socket.recv(2))[0]
-        
-        for file_hash, data in output.items():
-            print(f"\tHash: {file_hash}")
-            for ip, block_size, last_block_size, full_file, blocks in data:
-                if full_file != 0:
-                    print(f"""
-                            IPv4 address: {ip}
-                            Division size: {block_size}
-                            Last block size: {last_block_size}
-                            Number of blocks: {full_file}
-                        """)
-                else:
-                    print(f"""
-                            IPv4 address: {ip}
-                            Division size: {block_size}
-                            Last block size: {last_block_size}
-                            Number of blocks: {len(blocks)}
-                        """)
-                print("\n")
-        print("Counter: ", counter)
-        
-        if self.callback:
-            self.callback()
-                        
     def handle_locate_hash_response(self):
         n_ips = struct.unpack("!H", self.socket.recv(2))[0]
         
-        output = {}  # ip -> (block_size, last_block_size, full_file, [blocks])
+        output_full_files = {}  # ip -> (block_size, last_block_size, full_file, [blocks])
+        output_partial_files = {}
         
         for _ in range(n_ips):
             ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
             ip_str = socket.inet_ntoa(bytes(ip_bytes))
             
             n_sets = struct.unpack("!B", self.socket.recv(1))[0]
-            output[ip_str] = []
             
             for _ in range(n_sets):
                 block_size = struct.unpack("!H", self.socket.recv(2))[0]
                 last_block_size = struct.unpack("!H", self.socket.recv(2))[0]
                 full_file = struct.unpack("!H", self.socket.recv(2))[0]
                 
-                blocks = []
                 if full_file == 0:
+                    blocks = []
                     n_blocks = struct.unpack("!H", self.socket.recv(2))[0]
                     for _ in range(n_blocks):
                         block_number = struct.unpack("!H", self.socket.recv(2))[0]
                         blocks.append(block_number)
                         
-                output[ip_str].append((block_size, last_block_size, full_file, blocks))
-                
+                    if output_partial_files.get(ip_str) is None:
+                        output_partial_files[ip_str] = []
+                        
+                    output_partial_files[ip_str].append((block_size, last_block_size, blocks))
+                else:     
+                    if output_full_files.get(ip_str) is None:
+                        output_full_files[ip_str] = []
+                    output_full_files[ip_str].append((block_size, last_block_size, full_file))
+                                        
         counter = struct.unpack("!H", self.socket.recv(2))[0] 
+        self.response_queue.put((output_full_files, output_partial_files, counter))            
         
-        for ip, data in output.items():
-            print(f"\tIPv4 address: {ip}")
-            for block_size, last_block_size, full_file, blocks in data:
-                if full_file != 0:
-                    print(f"""
-                            Division size: {block_size}
-                            Last block size: {last_block_size}
-                            Number of blocks: {full_file}
-                        """)
-                else:
-                    print(f"""
-                            Division size: {block_size}
-                            Last block size: {last_block_size}
-                            Number of blocks: {len(blocks)}
-                        """)
-                print("\n")
-        print("Counter: ", counter)
-                
-        if self.callback:
-            self.callback()
-                            
-    def send_update_message(self):
-        encoded_message = self.encode_update_message()
-        self.socket.sendall(encoded_message)
+    def handle_locate_name_response(self):
+        n_ips = struct.unpack("!H", self.socket.recv(2))[0]
+        ips_dict = {}
         
-    def send_leave_message(self):
-        self.socket.send(struct.pack("!B", action.LEAVE.value))
+        output = {}  # hash -> [ip]
         
-    def send_locate_message(self, locate_type, data):
-        encoded_message = self.encode_locate_message(locate_type, data)
-        if encoded_message is not None:
-            self.socket.sendall(encoded_message)
-        elif self.callback:
-            self.callback()
-        
-    def encode_locate_message(self, locate_type, data):
-        
-        if self.debug:
-            print("Locate type: ", locate_type)
+        for i in range(n_ips):
+            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
+            ip_str = socket.inet_ntoa(bytes(ip_bytes))
+            ips_dict[i+1] = ip_str
             
-        if locate_type == action.LOCATE_NAME.value:
-            
-            if self.debug:
-                print("Locate by name: ", data)
-            
-            file_name = data.encode("utf-8")
-            file_name_len = len(file_name)
-            format_string = "!BB%ds" % file_name_len
-            flat_data = [locate_type, file_name_len, file_name]
-            return struct.pack(format_string, *flat_data)
+        n_hashes = struct.unpack("!H", self.socket.recv(2))[0]
         
-        elif locate_type == action.LOCATE_HASH.value:    
+        for _ in range(n_hashes):
+            file_hash_length = struct.unpack("!B", self.socket.recv(1))[0]
+            file_hash = self.socket.recv(file_hash_length).hex()
             
-            if self.debug:
-                print("Locate by hash: ", data)
-                
-            file_hash = bytes.fromhex(data)
-            file_hash_len = len(file_hash)
-            format_string = "!BH%ds" % file_hash_len
-            flat_data = [locate_type, file_hash_len, file_hash]
-            return struct.pack(format_string, *flat_data)
-        else:
-            if self.debug:
-                print("Invalid locate type")
-            return None
+            output[file_hash] = []
+            
+            n_ips_with_hash = struct.unpack("!H", self.socket.recv(2))[0]
+            
+            for _ in range(n_ips_with_hash):
+                ip_reference = struct.unpack("!H", self.socket.recv(2))[0]
+                output[file_hash].append(ips_dict[ip_reference])
         
-    def encode_update_message(self):
+        counter = struct.unpack("!H", self.socket.recv(2))[0]    
+        self.response_queue.put((output, counter))
+    
+    def handle_check_status_response(self):
+        status_db, result, counter = struct.unpack("!BBH", self.socket.recv(1+1+2))
+        self.response_queue.put((status_db, result, counter))
+    
+    """
+    Functions that send messages to the tracker
+    """
+    
+    def send_leave_request(self):  # receives a normal response
+        self.socket.sendall(struct.pack("!B", action.LEAVE.value))
+        
+    def send_test(self):
+        self.socket.sendall(struct.pack("!B", action.TEST.value))
+    
+    def send_update_full_request(self):  # receives a normal response
+        pass
+    
+    def send_update_partial_request(self):  # receives a normal response
+        pass
+    
+    def send_update_status_request(self, s):  # receives a normal response
+        self.socket.sendall(struct.pack("!BB", action.UPDATE_STATUS.value, s))
+    
+    def send_locate_hash_request(self, file_hash):  # receives a locate hash response
+        encoded_request = self.encode_locate_hash_request(file_hash)
+        self.socket.sendall(encoded_request)
+    
+    def send_locate_name_request(self, file_name):  # receives a locate name response
+        encoded_request = self.enconde_locate_name_request(file_name)
+        self.socket.sendall(encoded_request)
+    
+    def send_check_status_request(self, ip):  # receives a check status response
+        encoded_request = self.encode_check_status_request(ip)
+        self.socket.sendall(encoded_request)
+    
+    """
+    Functions that encode messages to send to the tracker
+    """
+    
+    def encode_check_status_request(self, ip):
+        
+        ip_bytes = socket.inet_aton(ip)
+        format_string = "!BBBBB"
+        flat_data = [action.CHECK_STATUS.value]
+        flat_data.extend(ip_bytes)
+        
+        return struct.pack(format_string, *flat_data)
+    
+    def encode_locate_hash_request(self, file_hash):
+        
+        file_hash = bytes.fromhex(file_hash)
+        file_hash_length = len(file_hash)
+        format_string = "!BH%ds" % file_hash_length
+        flat_data = [action.LOCATE_HASH.value, file_hash_length, file_hash]
+        
+        return struct.pack(format_string, *flat_data)
+    
+    def enconde_locate_name_request(self, file_name):
+
+        file_name = file_name.encode("utf-8")
+        file_name_length = len(file_name)
+        format_string = "!BB%ds" % file_name_length
+        flat_data = [action.LOCATE_NAME.value, file_name_length, file_name]
+        
+        return struct.pack(format_string, *flat_data)
+    
+    def encode_all_files(self):
+        
         files = self.file_manager.files
         
-        format_string = "!BB"
-        flat_data = [action.UPDATE.value, len(files)]
+        format_string_uf = "!BH"
+        flat_data_uf = [action.UPDATE_FULL_FILES.value, 0]
+        n_files_uf = 0
         
+        format_string_up = "!BH"
+        flat_data_up = [action.UPDATE_PARTIAL.value, 0]
+        n_files_up = 0
+                
         for file in files.values():
             
             file_hash = bytes.fromhex(file.hash_id) if file.hash_id else b""
@@ -248,44 +742,211 @@ class FS_Node:
             
             file_name = file.name.encode("utf-8")
             file_name_length = len(file_name)
-            n_block_sets = len(file.blocks)
             
-            format_string += "H%dsB%dsB" % (file_hash_length, file_name_length)
-            flat_data.extend([file_hash_length, file_hash, file_name_length, file_name, n_block_sets])
+            file_included_uf = False
+            n_block_sets_uf = 0
+            block_sets_uf_format_string = ""
+            block_sets_uf = []
             
-            for block_size, block_set in file.blocks.items():
-
-                flat_data_aux = []
-                last_block_size = block_size
+            file_included_up = False
+            n_block_sets_up = 0
+            block_sets_up_format_string = ""
+            block_sets_up = []
+            
+            for division_size, block_set in file.blocks.items():
                 
-                break_flag = False
-                if block_size in file.is_complete:
-                    
+                if len(block_set) == 0:
+                    continue
+                
+                break_flag = False                
+                if division_size in file.is_complete:
                     for block in block_set:
                         if block.is_last:
-                            format_string += "HHH"
-                            flat_data.extend([block_size, block.size, len(block_set)])
+                            
+                            if not file_included_uf:
+                                file_included_uf = True
+                                n_files_uf += 1
+                            
+                            n_block_sets_uf += 1
+                                
+                            block_sets_uf_format_string += "HHH"
+                            block_sets_uf.extend([division_size, block.size, len(block_set)])
                             break_flag = True
-                            break;
-                
+                            
                 if break_flag:
                     break
-                    
-                flat_data_aux = []
-                last_block_size = block_size
+                
+                if not file_included_up:
+                    file_included_up = True
+                    n_files_up += 1
+                
+                aux = []
+                last_block_size = division_size
                 for block in block_set:
-                    flat_data_aux.append(block.number)
+                    aux.append(block.number)
                     if block.is_last:
                         last_block_size = block.size
                         
-                format_string += "HHHH"
-                flat_data.extend([block_size, last_block_size, 0, len(block_set)])
-                format_string += "H" * len(flat_data_aux)
-                flat_data.extend(flat_data_aux)
+                n_block_sets_up += 1
+                block_sets_up_format_string += "HHH"
+                block_sets_up.extend([division_size, last_block_size, len(block_set)])
                 
-        return struct.pack(format_string, *flat_data)
-       
+
+            if n_block_sets_uf > 0:
+                format_string_uf += "H%dsB%ds" % (file_hash_length, file_name_length)
+                flat_data_uf.extend([file_hash_length, file_hash, file_name_length, file_name])
+
+                format_string_uf += "B"
+                flat_data_uf.append(n_block_sets_uf)
+
+                format_string_uf += block_sets_uf_format_string
+                flat_data_uf.extend(block_sets_uf)
+
+            if n_block_sets_up > 0:
+                format_string_up += "H%dsB%ds" % (file_hash_length, file_name_length)
+                flat_data_up.extend([file_hash_length, file_hash, file_name_length, file_name])
+
+                format_string_up += "B"
+                flat_data_up.append(n_block_sets_up)
+
+                format_string_up += block_sets_up_format_string
+                flat_data_up.extend(block_sets_up)
+        
+        uf_packed_data = None
+        up_packed_data = None
+        
+        if len(format_string_uf) > 3:
+            flat_data_uf[1] = n_files_uf
+            uf_packed_data = struct.pack(format_string_uf, *flat_data_uf)        
             
+        if len(format_string_up) > 3:
+            flat_data_up[1] = n_files_up
+            up_packed_data = struct.pack(format_string_up, *flat_data_up)
+            
+        return uf_packed_data, up_packed_data
+    
+    """
+    Algorithms
+    """
+    
+    # does not use nodes with partial files
+    def simple_assign_blocks_to_nodes_algorithm(self, full_files_info, partial_files_info, best_div_size_fixed=512):
+        if full_files_info is None:
+            return None
+        
+        division_size_dict = {}  # division_size => [ip]
+                
+        for ip, data in full_files_info.items():
+            for block_size, _, n_blocks in data:
+                if division_size_dict.get(block_size) is None:
+                    division_size_dict[block_size] = []
+                division_size_dict[block_size].append((ip, n_blocks))
+                
+        best_division_size = None
+        best_division_size_n_ips = 0
+        for division_size, ips in division_size_dict.items():
+            len_ips = len(ips)
+            if (
+                    best_division_size is None or
+                    (
+                        len_ips == best_division_size_n_ips and
+                        abs(division_size - best_div_size_fixed) < abs(best_division_size - best_div_size_fixed)
+                    )
+                    or len_ips > best_division_size_n_ips
+            ):
+                best_division_size = division_size
+                best_division_size_n_ips = len_ips
+                
+        if best_division_size is None:
+            return None
+        
+        ips = division_size_dict[best_division_size]
+        n_blocks = ips[0][1]
+        n_ips = len(ips)
+        
+        blocks_per_ip = n_blocks // n_ips
+        remaining_blocks = n_blocks % n_ips
+        
+        blocks_assignment = {}
+        
+        if blocks_per_ip != 0:
+            for ip in ips:
+                blocks_assignment[ip[0]] = blocks_per_ip
+                
+        while remaining_blocks > 0:
+            for ip, _ in ips:
+                if remaining_blocks == 0:
+                    break
+                if blocks_assignment.get(ip) is None:
+                    blocks_assignment[ip] = 1
+                else:
+                    blocks_assignment[ip] += 1
+                remaining_blocks -= 1
+
+        new_blocks_assignment = {}
+        
+        start = 1
+        for ip, n_blocks_ip in blocks_assignment.items():
+            is_full = False
+            if n_blocks_ip == n_blocks:
+                is_full = True
+            new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full)
+            start += n_blocks_ip
+
+        return best_division_size, new_blocks_assignment
+
+   
+"""
+Functions that print the output of the tracker
+"""
+
+def print_locate_hash_output(output):
+    output_full_files, output_partial_files, counter = output
+    for ip, data in output_full_files.items():
+    
+        print(f"\tIPv4 address: {ip}")
+        for block_size, last_block_size, n_blocks in data:
+            print(f"""
+                    Division size: {block_size}
+                    Last block size: {last_block_size}
+                    Number of blocks: {n_blocks}
+                """)
+            print("\n")
+            
+    for ip, data in output_partial_files.items():
+        
+        print(f"\tIPv4 address: {ip}")
+        for block_size, last_block_size, blocks in data:
+            print(f"""
+                    Division size: {block_size}
+                    Last block size: {last_block_size}
+                    Blocks: {blocks}
+                """)
+            print("\n")
+            
+    print("Counter: ", counter)
+    
+def print_locate_name_output(output):
+    output, counter = output
+    
+    for file_hash, ips in output.items():
+        print("File hash: ", file_hash)
+        print("\tIPs: ", ips)
+    print("Counter: ", counter)
+    
+def print_check_status_output(output):
+    status_db, result, counter = output
+    print("Status: ", status(status_db).name, result)
+    print("Counter: ", counter)
+    
+def print_response_output(output):
+    result_status, counter = output
+    print(status(result_status).name, counter)
+    
+"""
+FS_Node_controller is a class that handles the user input
+"""
+
 class FS_Node_controller:
     def __init__(self, node):
         self.response_event = threading.Event()
@@ -301,55 +962,245 @@ class FS_Node_controller:
     def wait_for_response(self):
         self.response_event.wait()
         self.reset_response_event()
+        return self.node.response_queue.get()
         
     def run(self):
-        try:
-            while not self.done and not self.node.done:
-                command = input("Enter a command: ")
+        while not self.done and not self.node.done:
+            try:
+                command = input("Enter a command:\n").strip().lower()
                 
                 if self.done:
                     break
                 
-                if command == "leave" or command == "l":
-                    print("Leaving ...")
+                if command == "test" or command == "t":
+                    print("This command is avaible for testing purposes only")
+                    self.node.send_test()
+                    print("Sending test ...")
+                    output = self.wait_for_response()
+                    print_response_output(output)
+                    
+                elif command == "leave" or command == "l":
                     self.done = True
-                    self.node.send_leave_message()
-                    self.wait_for_response()
-                    self.node.shutdown()
-                elif command == "update" or command == "u":
-                    print("Updating ...")
-                    self.node.send_update_message()
-                    self.wait_for_response()
-                elif command == "locate" or command == "lo":
+                    self.node.send_leave_request()
+                    print("Leaving ...")
+                    output = self.wait_for_response()
+                    print_response_output(output)
+                    
+                elif command == "full update" or command == "fu":
+                    uf_packed_data, up_packed_data = self.node.encode_all_files()
+                    
+                    if uf_packed_data is not None:
+                        self.node.socket.sendall(uf_packed_data)
+                        print("Sending UPDATE_FULL request ...")
+                        output = self.wait_for_response()
+                        print_response_output(output)
+                        
+                    if up_packed_data is not None:
+                        self.node.socket.sendall(up_packed_data)
+                        print("Sending UPDATE_PARTIAL request ...")
+                        output = self.wait_for_response()
+                        print_response_output(output)
+                        
+                elif command == "locate name" or command == "ln":
                     file_name = input("Enter file name: ")
+                    self.node.send_locate_name_request(file_name)
+                    print("Locating file name...")
+                    output = self.wait_for_response()
+                    print_locate_name_output(output)
                     
+                    
+                elif command == "locate hash" or command == "lh":
+                    file_hash = input("Enter file hash: ")
+                    self.node.send_locate_hash_request(file_hash)
+                    print("Locating file hash ...")
+                    output = self.wait_for_response()
+                    print_locate_hash_output(output)
+                    
+                elif command == "locate hash with name" or command == "lhn":
+                    file_name = input("Enter file name: ")
                     result = self.node.file_manager.get_file_hash_by_name(file_name)
-                    if result is None:
-                        self.node.send_locate_message(action.LOCATE_NAME.value, file_name)
-                    else:
-                        self.node.send_locate_message(action.LOCATE_HASH.value, result)
                     
-                    print("Locating ...")
-                    self.wait_for_response()
+                    if result is None:
+                        print("File not found in local directory. Sendind LOCATE_NAME request ...")
+                        self.node.send_locate_name_request(file_name)  
+                        output = self.wait_for_response()
+                        print_locate_name_output(output)
+                        
+                    else:
+                        print("File found in local directory. Sendind LOCATE_HASH request ...")
+                        self.node.send_locate_hash_request(result)
+                        output = self.wait_for_response()
+                        print_locate_hash_output(output)
+                    
+                elif command == "check status" or command == "cs":
+                    ip = input("Enter ip address: ")
+                    self.node.send_check_status_request(ip)
+                    print("Checking status ...")
+                    output = self.wait_for_response()
+                    print_check_status_output(output)
+                    
+                elif command == "update status" or command == "us":
+                    print("This command is avaible for testing purposes only")
+                    s = input("Enter status: ")
+                    self.node.send_update_status_request(int(s))
+                    print("Updating status ...")
+                    output = self.wait_for_response()
+                    print_response_output(output)
+                    
+                elif command == "get" or command == "g":
+                    file_hash = input("Enter file hash: ")
+                    self.node.send_locate_hash_request(file_hash)
+                    response = self.wait_for_response()
+                    
+                    if (
+                        (response[0] is None or len(response[0]) == 0) and 
+                        (response[1] is None or len(response[1]) == 0)
+                    ):
+                        print("Hash not found")
+                        continue
+                    
+                    division_size, output = self.node.simple_assign_blocks_to_nodes_algorithm(response[0], response[1])
+                                
+                    if output is None or len(output) == 0:
+                        print("No addresses available")
+                        continue
+                        
+                    print(output)
+                        
+                    for ip, blocks in output.items():
+                        if blocks[2]:  # full file
+                            print(f"Sending GET_FULL_FILE request to {ip} ...")
+                            self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, division_size)
+                        else:
+                            print(f"Sending GET_PARTIAL_FILE request to {ip} ...")
+                            sequences = [(blocks[0], blocks[1])]
+                            self.node.send_udp_get_partial_file_request((ip, self.node.udp_port), file_hash, division_size, sequences, [])
+                            
+                elif command == "join blocks" or command == "jbb":
+                    file_name = input("Enter file name: ")
+                    division_size = input("Enter division size: ")
+                    r = self.node.file_manager.join_blocks(file_name, int(division_size))
+                    if r:
+                        print("File joined successfully")
+                    else:
+                        print("Error joining file")
+                    
+                elif command == "test ack" or command == "ta":
+                    ip = input("Enter ip address: ")
+                    ack_num = input("Enter ack number: ")
+                    self.node.send_udp_ack((ip, self.node.udp_port), int(ack_num))
+                    
+                elif command == "test get full file" or command == "tgff":
+                    ip = input("Enter ip address: ")
+                    file_hash = input("Enter file hash: ")
+                    division_size = input("Enter division size: ")
+                    self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, int(division_size))
+                    
+                elif command == "test get partial file" or command == "tgpf":
+                    ip = input("Enter ip address: ")
+                    file_hash = input("Enter file hash: ")
+                    division_size = input("Enter division size: ")
+                    n_seq = input("Enter number of sequences: ")
+                    sequences = []
+                    for i in range(int(n_seq)):
+                        first = input(f"Enter first block of sequence {i+1}: ")
+                        last = input(f"Enter last block of sequence {i+1}: ")
+                        sequences.append((int(first), int(last)))
+                    n_blocks = input("Enter number of blocks: ")
+                    blocks = []
+                    for i in range(int(n_blocks)):
+                        block = input(f"Enter block {i+1}: ")
+                        blocks.append(int(block))
+                    self.node.send_udp_get_partial_file_request(
+                        (ip, self.node.udp_port), file_hash, 
+                        int(division_size), 
+                        sequences, 
+                        blocks
+                    )
+                
+                elif command == "test send start data" or command == "tssd":
+                    ip = input("Enter ip address: ")
+                    seq_num = input("Enter sequence number: ")
+                    file_name = input("Enter file name: ")
+                    division_size = input("Enter division size: ")
+                    block_number = input("Enter block number: ")
+                    
+                    data, _ = self.node.file_manager.get_block_with_file_name(file_name, int(division_size), int(block_number))
+                    
+                    if data is None:
+                        print("Block not found")
+                    else:
+                        print("Data: ", data)
+                        self.node.send_udp_start_data_message(
+                            (ip, self.node.udp_port), 
+                            action_udp.START_DATA.value, 
+                            int(seq_num), 
+                            file_name,
+                            int(division_size),
+                            int(block_number),
+                            data
+                        )    
+                
+                elif command == "test send data" or command == "tsd":
+                    ip = input("Enter ip address: ")
+                    seq_num = input("Enter sequence number: ")
+                    file_name = input("Enter file name: ")
+                    division_size = input("Enter division size: ")
+                    block_number = input("Enter block number: ")
+                    
+                    data, _ = self.node.file_manager.get_block_with_file_name(file_name, int(division_size), int(block_number))
+                    
+                    if data is None:
+                        print("Block not found")
+                    else:
+                        print("Data: ", data)
+                        self.node.send_udp_data_message(
+                            (ip, self.node.udp_port), 
+                            action_udp.DATA.value, 
+                            int(seq_num), 
+                            int(block_number),
+                            data
+                        )
+                
+                elif command == "help" or command == "h":
+                    print("Commands:")
+                    print("\tleave (l)")
+                    print("\tfull update (fu)")
+                    print("\tlocate hash (lh)")
+                    print("\tlocate name (ln)")
+                    print("\tlocate hash with name (lhn)")
+                    print("\tcheck status (cs)")
+                    print("\tupdate status (us)")
+                    print("\thelp (h)")
+                
                 else:
                     print("Invalid command")
-        except KeyboardInterrupt:
-            print("[fs_node_controller] Keyboard interrupt")
-            self.done = True
-  
+                    
+            except Exception as e:
+                print("Error message:", e)
+                print("Traceback:")
+                traceback.print_exc() 
+
+
+"""
+Parser for command line arguments
+"""
 
 def parse_args():
     try:
         parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
-        parser.add_argument('--port', '-p', type=int, default=8080, help='Port to bind the server to')
+        parser.add_argument('--port', '-p', type=int, default=9090, help='Port to bind the server to')
         parser.add_argument('--address', '-a', type=str, default=None, help='Host IP address to bind the server to')
         parser.add_argument('--debug', '-d', type=bool, default=True, help='Enable debug mode')
-        parser.add_argument('--block_size', '-b', type=int, default=1024, help='Block size')
+        parser.add_argument('--block_size', '-b', type=int, default=512, help='Block size')
         parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
         args = parser.parse_args()
         
-        if args.block_size >= 2**(16):
+        if args.block_size > 1024:
             raise argparse.ArgumentError("Block size must be less than 2^(16)")
+    
+        if args.dir is None:
+            raise argparse.ArgumentError("Directory must be specified")
     
         return args
     except argparse.ArgumentError as e:
@@ -364,7 +1215,7 @@ if __name__ == "__main__":
     fs_node_1 = FS_Node(
         dir=args.dir,
         server_address=args.address,
-        server_port=args.port,
+        port=args.port,
         block_size=args.block_size,
         debug=args.debug,
     )
@@ -384,4 +1235,3 @@ if __name__ == "__main__":
         fs_node_1.shutdown()
         node_controller.done = True
         node_controller_thread.join()
-    
