@@ -1,75 +1,154 @@
-#import "cover.typ": cover
 #import "template.typ": *
-
-#show: project
-
-#cover(title: "[Inserir título aqui]", authors: (
-  (name: "Rodrigo Monteiro", number: "a100706"), 
-  (name: "Diogo Abreu", number: "a100646"), 
-  (name: "Miguel Gramoso", number: "a100845")), 
-  "Outubro, 2023")
-
-#set page(numbering: "i", number-align: center)
-#counter(page).update(1)
-
-#heading(numbering: none, outlined: false)[Resumo]
-<\<O resumo tem como objectivo descrever de forma sucinta o trabalho realizado. Deverá conter uma pequena introdução, seguida por uma breve descrição do trabalho realizado e terminando com uma indicação sumária do seu estado final. Não deverá exceder as 400 palavras.>>   
-
-\
-
-*Área de Aplicação*: <\<Identificação da Área de trabalho. Por exemplo: Desenho e arquitectura de Sistemas de Bases de Dados.>>
-
-*Palavras-Chave*: <\<Conjunto de palavras-chave que permitirão referenciar domínios de conhecimento, tecnologias, estratégias, etc., directa ou indirectamente referidos no relatório. Por exemplo: Bases de Dados Relacionais, Gestão de Índices, JAVA, Protocolos de Comunicação.>>
-
-#show outline: it => {
-    show heading: set text(size: 18pt)
-    it
-}
-
-#{
-  show outline.entry.where(level: 1): it => {
-    v(5pt)
-    strong(it)
-  }
-
-  outline(
-    title: [Índice], 
-    indent: true, 
-  )
-}
-
-#v(-0.4em)
-#outline(
-  title: none,
-  target: figure.where(kind: "attachment"),
-  indent: n => 1em,
+#import "bytefield.typ": *
+#show: LNCS-paper.with(
+  title: "Transferência rápida e fiável de múltiplos servidores em simultâneo",
+  subtitle: "Comunicações por Computador\nTrabalho prático Nº2",
+  university: "Universidade do Minho, Departamento de Informática",
+  email_type: "alunos.uminho.pt",
+  authors: (
+    (
+      name: "Rodrigo Monteiro",
+      number: "a100706",
+    ),
+    (
+      name: "Diogo Abreu",
+      number: "a100646",
+    ),
+    (
+      name: "Miguel Gramoso",
+      number: "a100845",
+    )
+  ),
+  abstract: lorem(30),
+  bibliography-file: "refs.bib",
 )
 
-#outline(
-  title: [Lista de Figuras],
-  target: figure.where(kind: image),
+= Introdução
+
+= Arquitetura da solução
+
+
+= FS Tracker Protocol
+
+== Motivação
+
+
+== Vista geral
+
+
+== Especificação
+
+=== Atualização dos ficheiros completos
+
+#bytefield(
+  bits: 40,
+  bitheader: (0, 8, 24, 39),
+  bits(8)[Type],
+  bits(16)[Nº of files],
+  bits(16)[File hash length],
+  bits(40)[File hash],
+  bits(16)[File name length],
+  bits(24)[File name],
+  bits(8)[Nº block sets],
+  bits(16)[Division size],
+  bits(16)[Size of the last block],
+  bits(16)[Nº of blocks],
 )
 
-#outline(
-  title: [Lista de Tabelas],
-  target: figure.where(kind: table),
+=== Atualização parcial dos ficheiros
+
+#bytefield(
+  bits: 40,
+  bitheader: (0, 8, 24, 39),
+  bits(8)[Type],
+  bits(16)[Nº of files],
+  bits(16)[File hash length],
+  bits(40)[File hash],
+  bits(16)[File name length],
+  bits(24)[File name],
+  bits(8)[Nº block sets],
+  bits(16)[Division size],
+  bits(16)[Size of the last block],
+  bits(16)[Nº of blocks],
+  bits(16)[Block],
+  bits(16)[Block],
+  bits(16)[Block],
+  bits(16)[Block],
 )
 
-// Make the page counter reset to 1
-#set page(numbering: "1", number-align: center)
-#counter(page).update(1)
+=== Resposta genérica
 
-= FS Track Protocol
+#bytefield(
+  bits: 40,
+  bitheader: (0, 8, 24, 39),
+  bits(8)[Type], 
+  bits(16)[Result status],
+  bits(16)[Counter]
 
-#table(
-  columns: 3,
-  "Type"
 )
-= Conclusões
 
-// #heading(numbering: none)[Referências]
-#bibliography("refs.bib", title: "Referências")
+=== Pacote de saída
 
-// #heading(numbering: none)[Lista de Siglas e Acrónimos]
+#bytefield(
+  bits: 8,
+  bitheader: (0, 7),
+  bits(8)[Type],
+)
 
-#heading(numbering: none)[Anexos]
+=== Atualização de estado
+
+#bytefield(
+  bits: 16,
+  bitheader: (0, 8, 15),
+  bits(8)[Type],
+  bits(8)[Status]
+)
+
+=== Verificação de estado
+
+#bytefield(
+  bits: 40,
+  bitheader: (0, 8, 39),
+  bits(8)[Type],
+  bits(32)[IPv4 address],
+)
+
+=== Resposta de estado
+
+#bytefield(
+  bits: 32,
+  bitheader: (0, 8, 16, 31),
+  bits(8)[Type],
+  bits(8)[Result],
+  bits(16)[Counter]
+)
+
+=== Localizar ficheiro por nome
+
+#bytefield(
+  bits: 24,
+  bitheader: (0, 8, 23),
+  bits(8)[Type],
+  bits(16)[File name length],
+  bits(24)[File name],
+)
+
+== Localizar ficheiro por hash
+
+== Implementação
+
+== Testes
+
+= FS Transfer Protocol
+
+== Motivação
+
+== Vista geral
+
+== Especificação
+
+== Implementação
+
+== Testes
+
+= Conclusões e trabalho futuro
