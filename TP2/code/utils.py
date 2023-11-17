@@ -21,7 +21,7 @@ class action(IntEnum):
     RESPONSE_LOCATE_HASH = 9
     RESPONSE_LOCATE_NAME = 10
     RESPONSE_CHECK_STATUS = 11
-    TEST = 12
+
 
 class action_udp(IntEnum):
     START_DATA = 0
@@ -31,6 +31,7 @@ class action_udp(IntEnum):
     GET_FULL_FILE = 4
     GET_PARTIAL_FILE = 5
     ACK = 6
+    
     
 class status(IntEnum):
     SUCCESS = 0
@@ -91,38 +92,6 @@ class Queue_dictionary:
                 return None
         else:
             return None
-        
-        
-"""
-Timer
-"""
-
-class Timer(object):
-    TIMER_STOP = -1
-
-    def __init__(self, duration):
-        self._start_time = self.TIMER_STOP
-        self._duration = duration
-
-    def start(self):
-        if self._start_time == self.TIMER_STOP:
-            self._start_time = time.time()
-
-    def stop(self):
-        if self._start_time != self.TIMER_STOP:
-            self._start_time = self.TIMER_STOP
-
-    # Determines whether the timer is runnning
-    def running(self):
-        return self._start_time != self.TIMER_STOP
-
-    # Determines whether the timer timed out
-    def timeout(self):
-        if not self.running():
-            return False
-        else:
-            return time.time() - self._start_time >= self._duration
-
 
 """
 Other
@@ -136,5 +105,3 @@ def join_blocks(sequences, blocks):
             block_numbers.append(i)
     block_numbers.extend(blocks)
     return block_numbers
-
-

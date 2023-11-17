@@ -9,7 +9,7 @@ from queue import Queue
 import time
         
         
-class UDP_receiver_connection_v2:
+class UDP_receiver_connection:
     def __init__(self, host, port, start_seq_num, file_name, division_size, file_manager, debug=False, buffer_size=4):
         self.host = host
         self.port = port
@@ -59,13 +59,11 @@ class FS_Node:
         udp_port=9090,
         udp_max_buffer_size=1400,
         udp_receiver_window_size=4,
-        udp_sender_window_size=4,
         udp_receiver_connection_timeout=5,
         udp_ack_timeout=0.4
     ):
         # TCP   
         self.socket = None
-        self.udp_socket = None
         self.dir = dir
         self.server_address = server_address
         self.port = port
@@ -87,7 +85,6 @@ class FS_Node:
         self.udp_ack_timeout = udp_ack_timeout
         
         self.udp_receiver_window_size = udp_receiver_window_size
-        self.udp_sender_window_size = udp_sender_window_size
         
         self.udp_ack_queue = Queue_dictionary() # receives acks from other nodes' get requests
         self.udp_receiver_connections = {}  # sends acks upon received data
@@ -107,7 +104,7 @@ class FS_Node:
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
         self.udp_socket.settimeout(self.udp_timeout)
         self.udp_socket.bind((self.udp_host, self.udp_port))
-        
+    
     def run_udp_receiver(self):
         while not self.done:
             try:
@@ -123,95 +120,24 @@ class FS_Node:
                     print(" >>> Received UDP packet from %s:%d with flag %s" % (address[0], address[1], action_udp(decoded_flag).name))                      
                 
                 # ACK
-                if decoded_flag == action_udp.ACK.value:
-                    
-                    ack_num = struct.unpack("!H", bytes_read[1:3])[0]
-                    self.udp_ack_queue.put(address, ack_num)
-                    
-                    if self.debug:
-                        print(" >>> Received ack from %s:%d with ack_num %d" % (address[0], address[1], ack_num))
-                    
-                # GET FULL FILE REQUEST
-                elif decoded_flag == action_udp.GET_FULL_FILE.value:
-                    
-                    packet = self.decode_udp_get_full_file(bytes_read[1:])
-                    print(" >>> Packet: ", packet)
-                    
-                    file_hash, division_size = packet
-                    
-                    block_numbers = self.file_manager.get_all_block_numbers(file_hash, division_size)
-                    
-                    thread = threading.Thread(
-                        target=self.send_udp_blocks, 
-                        args=(address, file_hash, division_size, block_numbers)
-                    )
-                    
-                    with self.lock:
-                        if self.udp_threads.get(address) is not None:
-                            if self.debug:
-                                print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
-                                print(" >>> Request ignored.")
-                        else:                     
-                            self.udp_threads[address] = thread
-                            thread.start()
-                                            
-                # GET PARTIAL FILE REQUEST
-                elif decoded_flag == action_udp.GET_PARTIAL_FILE.value:
-                    
-                    packet = self.decode_udp_get_partial_file(bytes_read[1:])
-                    print(" >>> Packet: ", packet)
-                    
-                    file_hash, division_size, sequences, blocks = packet
-                    
-                    block_numbers = join_blocks(sequences, blocks)
-                    
-                    thread = threading.Thread(
-                        target=self.send_udp_blocks,
-                        args=(address, file_hash, division_size, block_numbers)
-                    )
-                    
-                    with self.lock:
-                        if self.udp_threads.get(address) is not None:
-                            if self.debug:
-                                print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
-                                print(" >>> Request ignored.")
-                        else:                     
-                            self.udp_threads[address] = thread
-                            thread.start()
-                                        
-                # START DATA
-                elif decoded_flag == action_udp.START_DATA.value:
-                    
-                    packet = self.decode_udp_start_data_message(bytes_read[1:])
-                    print(" >>> Received packet: ", packet[:-1])
-                    self.handle_udp_start_data(address, packet)
-                    
-                # START-END DATA (only one block)
-                elif decoded_flag == action_udp.START_END_DATA.value:
-                    
-                    _, file_name, div_size, block_number, data = self.decode_udp_start_data_message(bytes_read[1:])
-                    print(" >>> Received packet: ", (file_name, div_size, block_number))
-                    self.file_manager.save_block(file_name, div_size, block_number, True, data)
-                    # Received the only packet needed
-                    
-                # DATA
-                elif decoded_flag == action_udp.DATA.value:
-                    
-                    packet = self.decode_udp_data_message(bytes_read[1:])
-                    print(" >>> Received packet: ", packet[:-1])
-                    self.handle_udp_data(address, packet)
-                    
-                # END DATA
-                elif decoded_flag == action_udp.END_DATA.value:
-                    
-                    packet = self.decode_udp_data_message(bytes_read[1:])
-                    print(" >>> Received packet: ", packet[:-1])
-                    self.handle_udp_data(address, packet)
-                         
+                udp_action_handlers = {
+                    action_udp.ACK.value: self.udp_ack_flag_handler,
+                    action_udp.GET_FULL_FILE.value: self.udp_get_full_file_flag_handler,
+                    action_udp.GET_PARTIAL_FILE.value: self.udp_get_partial_file_flag_handler,
+                    action_udp.START_DATA.value: self.udp_start_data_flag_handler,
+                    action_udp.START_END_DATA.value: self.udp_start_end_data_flag_handler,
+                    action_udp.DATA.value: self.udp_data_flag_handler,
+                    action_udp.END_DATA.value: self.udp_end_data_flag_handler,
+                }
+
+                decoded_flag = bytes_read[0]
+
+                if decoded_flag in udp_action_handlers:
+                    udp_action_handlers[decoded_flag](bytes_read, address)
                 else:
                     if self.debug:
                         print(" >>> Invalid action received")
-                        
+
                 if time.time() - self.udp_last_receiver_connections_cleanup > self.udp_receiver_connection_timeout:
                     self.udp_receiver_connections_cleanup()
                          
@@ -221,6 +147,96 @@ class FS_Node:
                     print("Traceback:")
                     traceback.print_exc()
                 break
+            
+    """
+    Flag handlers
+    """
+    
+    def udp_ack_flag_handler(self, bytes_read, address):
+        ack_num = struct.unpack("!H", bytes_read[1:3])[0]
+        if self.debug:
+            print(" >>> Received ack with ack_num %d" % (ack_num))
+        self.udp_ack_queue.put(address, ack_num)
+        
+    def udp_get_full_file_flag_handler(self, bytes_read, address):
+        packet = self.decode_udp_get_full_file(bytes_read[1:])
+        if self.debug:
+            print(" >>> Packet: ", packet)
+        
+        file_hash, division_size = packet
+        
+        block_numbers = self.file_manager.get_all_block_numbers(file_hash, division_size)
+        
+        thread = threading.Thread(
+            target=self.send_udp_blocks, 
+            args=(address, file_hash, division_size, block_numbers)
+        )
+        
+        with self.lock:
+            if self.udp_threads.get(address) is not None:
+                if self.debug:
+                    print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
+                    print(" >>> Request ignored.")
+            else:                     
+                self.udp_threads[address] = thread
+                thread.start()
+                
+    def udp_get_partial_file_flag_handler(self, bytes_read, address):
+        packet = self.decode_udp_get_partial_file(bytes_read[1:])
+        if self.debug:
+            print(" >>> Packet: ", packet)
+        
+        file_hash, division_size, sequences, blocks = packet
+        
+        block_numbers = join_blocks(sequences, blocks)
+        
+        thread = threading.Thread(
+            target=self.send_udp_blocks,
+            args=(address, file_hash, division_size, block_numbers)
+        )
+        
+        with self.lock:
+            if self.udp_threads.get(address) is not None:
+                if self.debug:
+                    print(" >>> Thread with address %s:%d already exists." % (address[0], address[1]))
+                    print(" >>> Request ignored.")
+            else:                     
+                self.udp_threads[address] = thread
+                thread.start()
+                
+    def udp_start_data_flag_handler(self, bytes_read, address):
+        packet = self.decode_udp_start_data_message(bytes_read[1:])
+        if self.debug:
+            print(" >>> Received packet: ", packet[:-1])
+        self.handle_udp_start_data(address, packet)
+        
+    def udp_start_end_data_flag_handler(self, bytes_read, address):
+        _, file_name, div_size, block_number, data = self.decode_udp_start_data_message(bytes_read[1:])
+        if self.debug:
+            print(" >>> Received packet: ", (file_name, div_size, block_number))
+        self.file_manager.save_block(file_name, div_size, block_number, True, data)
+        
+    def udp_data_flag_handler(self, bytes_read, address):
+        packet = self.decode_udp_data_message(bytes_read[1:])
+        if self.debug:
+            print(" >>> Received packet: ", packet[:-1])
+        self.handle_udp_data(address, packet)
+        
+    def udp_end_data_flag_handler(self, bytes_read, address):
+        self.udp_data_flag_handler(bytes_read, address)
+        
+        with self.lock:
+            file_name = None
+            if address in self.udp_receiver_connections:
+                file_name = self.udp_receiver_connections[address].file_name
+            self.response_queue.put((address, file_name, status.SUCCESS.value))
+
+            if self.callback:
+                self.callback()
+            
+    """
+    Send blocks
+    """
             
     def send_udp_blocks(self, address, file_hash, division_size, block_numbers):
         
@@ -297,7 +313,7 @@ class FS_Node:
     def handle_udp_start_data(self, address, packet):
         seq_num, file_name, division_size, block_number, data = packet
         if address not in self.udp_receiver_connections:
-            self.udp_receiver_connections[address] = UDP_receiver_connection_v2(
+            self.udp_receiver_connections[address] = UDP_receiver_connection(
                 address[0],
                 address[1],
                 seq_num,
@@ -370,44 +386,44 @@ class FS_Node:
     
     def decode_udp_start_data_message(self, bytes_read):
             
-            start = 0; end = 2
-            seq_num = struct.unpack("!H", bytes_read[start:end])[0]
-            
-            start = end; end += 1
-            file_name_len = struct.unpack("!B", bytes_read[start:end])[0]
-                        
-            start = end; end += file_name_len
-            file_name = bytes_read[start:end].decode("utf-8")
-            
-            start = end; end += 2
-            division_size = struct.unpack("!H", bytes_read[start:end])[0]
-            
-            start = end; end += 2
-            block_number = struct.unpack("!H", bytes_read[start:end])[0]
-            
-            start = end; end += 4
-            data_len = struct.unpack("!L", bytes_read[start:end])[0]
-            
-            start = end; end += data_len
-            data = bytes_read[start:end]
-            
-            return seq_num, file_name, division_size, block_number, data
+        start = 0; end = 2
+        seq_num = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 1
+        file_name_len = struct.unpack("!B", bytes_read[start:end])[0]
+                    
+        start = end; end += file_name_len
+        file_name = bytes_read[start:end].decode("utf-8")
+        
+        start = end; end += 2
+        division_size = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 2
+        block_number = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 4
+        data_len = struct.unpack("!L", bytes_read[start:end])[0]
+        
+        start = end; end += data_len
+        data = bytes_read[start:end]
+        
+        return seq_num, file_name, division_size, block_number, data
     
     def decode_udp_data_message(self, bytes_read):
             
-            start = 0; end = 2
-            seq_num = struct.unpack("!H", bytes_read[start:end])[0]
-            
-            start = end; end += 2
-            block_number = struct.unpack("!H", bytes_read[start:end])[0]
-            
-            start = end; end += 4
-            data_len = struct.unpack("!L", bytes_read[start:end])[0]
-            
-            start = end; end += data_len
-            data = bytes_read[start:end]
-            
-            return seq_num, block_number, data
+        start = 0; end = 2
+        seq_num = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 2
+        block_number = struct.unpack("!H", bytes_read[start:end])[0]
+        
+        start = end; end += 4
+        data_len = struct.unpack("!L", bytes_read[start:end])[0]
+        
+        start = end; end += data_len
+        data = bytes_read[start:end]
+        
+        return seq_num, block_number, data
     
     """
     UDP encode functions
@@ -557,15 +573,16 @@ class FS_Node:
                     break
 
                 decoded_byte = struct.unpack("!B", bytes_read)[0]
+                
+                response_handlers = {
+                    action.RESPONSE.value: self.handle_response,
+                    action.RESPONSE_LOCATE_HASH.value: self.handle_locate_hash_response,
+                    action.RESPONSE_LOCATE_NAME.value: self.handle_locate_name_response,
+                    action.RESPONSE_CHECK_STATUS.value: self.handle_check_status_response,
+                }
 
-                if action.RESPONSE.value == decoded_byte:
-                    self.handle_response()
-                elif action.RESPONSE_LOCATE_HASH.value == decoded_byte:
-                    self.handle_locate_hash_response()
-                elif action.RESPONSE_LOCATE_NAME.value == decoded_byte:
-                    self.handle_locate_name_response()
-                elif action.RESPONSE_CHECK_STATUS.value == decoded_byte:
-                    self.handle_check_status_response()
+                if decoded_byte in response_handlers:
+                    response_handlers[decoded_byte]()
                 else:
                     if self.debug:
                         print("Invalid action")
@@ -668,9 +685,6 @@ class FS_Node:
     def send_leave_request(self):  # receives a normal response
         self.socket.sendall(struct.pack("!B", action.LEAVE.value))
         
-    def send_test(self):
-        self.socket.sendall(struct.pack("!B", action.TEST.value))
-    
     def send_update_full_request(self):  # receives a normal response
         pass
     
@@ -972,14 +986,7 @@ class FS_Node_controller:
                 if self.done:
                     break
                 
-                if command == "test" or command == "t":
-                    print("This command is avaible for testing purposes only")
-                    self.node.send_test()
-                    print("Sending test ...")
-                    output = self.wait_for_response()
-                    print_response_output(output)
-                    
-                elif command == "leave" or command == "l":
+                if command == "leave" or command == "l":
                     self.done = True
                     self.node.send_leave_request()
                     print("Leaving ...")
@@ -1076,6 +1083,16 @@ class FS_Node_controller:
                             sequences = [(blocks[0], blocks[1])]
                             self.node.send_udp_get_partial_file_request((ip, self.node.udp_port), file_hash, division_size, sequences, [])
                             
+                    file_name = None
+                    for _ in range(len(output)):
+                        address, file_name, status = self.wait_for_response()
+                        
+                    r = self.node.file_manager.join_blocks(file_name, division_size)
+                    if r:
+                        print("File joined successfully")
+                    else:
+                        print("Error joining file")
+                            
                 elif command == "join blocks" or command == "jbb":
                     file_name = input("Enter file name: ")
                     division_size = input("Enter division size: ")
@@ -1084,83 +1101,6 @@ class FS_Node_controller:
                         print("File joined successfully")
                     else:
                         print("Error joining file")
-                    
-                elif command == "test ack" or command == "ta":
-                    ip = input("Enter ip address: ")
-                    ack_num = input("Enter ack number: ")
-                    self.node.send_udp_ack((ip, self.node.udp_port), int(ack_num))
-                    
-                elif command == "test get full file" or command == "tgff":
-                    ip = input("Enter ip address: ")
-                    file_hash = input("Enter file hash: ")
-                    division_size = input("Enter division size: ")
-                    self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, int(division_size))
-                    
-                elif command == "test get partial file" or command == "tgpf":
-                    ip = input("Enter ip address: ")
-                    file_hash = input("Enter file hash: ")
-                    division_size = input("Enter division size: ")
-                    n_seq = input("Enter number of sequences: ")
-                    sequences = []
-                    for i in range(int(n_seq)):
-                        first = input(f"Enter first block of sequence {i+1}: ")
-                        last = input(f"Enter last block of sequence {i+1}: ")
-                        sequences.append((int(first), int(last)))
-                    n_blocks = input("Enter number of blocks: ")
-                    blocks = []
-                    for i in range(int(n_blocks)):
-                        block = input(f"Enter block {i+1}: ")
-                        blocks.append(int(block))
-                    self.node.send_udp_get_partial_file_request(
-                        (ip, self.node.udp_port), file_hash, 
-                        int(division_size), 
-                        sequences, 
-                        blocks
-                    )
-                
-                elif command == "test send start data" or command == "tssd":
-                    ip = input("Enter ip address: ")
-                    seq_num = input("Enter sequence number: ")
-                    file_name = input("Enter file name: ")
-                    division_size = input("Enter division size: ")
-                    block_number = input("Enter block number: ")
-                    
-                    data, _ = self.node.file_manager.get_block_with_file_name(file_name, int(division_size), int(block_number))
-                    
-                    if data is None:
-                        print("Block not found")
-                    else:
-                        print("Data: ", data)
-                        self.node.send_udp_start_data_message(
-                            (ip, self.node.udp_port), 
-                            action_udp.START_DATA.value, 
-                            int(seq_num), 
-                            file_name,
-                            int(division_size),
-                            int(block_number),
-                            data
-                        )    
-                
-                elif command == "test send data" or command == "tsd":
-                    ip = input("Enter ip address: ")
-                    seq_num = input("Enter sequence number: ")
-                    file_name = input("Enter file name: ")
-                    division_size = input("Enter division size: ")
-                    block_number = input("Enter block number: ")
-                    
-                    data, _ = self.node.file_manager.get_block_with_file_name(file_name, int(division_size), int(block_number))
-                    
-                    if data is None:
-                        print("Block not found")
-                    else:
-                        print("Data: ", data)
-                        self.node.send_udp_data_message(
-                            (ip, self.node.udp_port), 
-                            action_udp.DATA.value, 
-                            int(seq_num), 
-                            int(block_number),
-                            data
-                        )
                 
                 elif command == "help" or command == "h":
                     print("Commands:")
@@ -1171,8 +1111,9 @@ class FS_Node_controller:
                     print("\tlocate hash with name (lhn)")
                     print("\tcheck status (cs)")
                     print("\tupdate status (us)")
+                    print("\tget (g)")
+                    print("\tjoin blocks (jbb)")
                     print("\thelp (h)")
-                
                 else:
                     print("Invalid command")
                     
@@ -1180,7 +1121,6 @@ class FS_Node_controller:
                 print("Error message:", e)
                 print("Traceback:")
                 traceback.print_exc() 
-
 
 """
 Parser for command line arguments
@@ -1191,9 +1131,13 @@ def parse_args():
         parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
         parser.add_argument('--port', '-p', type=int, default=9090, help='Port to bind the server to')
         parser.add_argument('--address', '-a', type=str, default=None, help='Host IP address to bind the server to')
-        parser.add_argument('--debug', '-d', type=bool, default=True, help='Enable debug mode')
+        parser.add_argument('--debug', '-d', default=False, action='store_true')
         parser.add_argument('--block_size', '-b', type=int, default=512, help='Block size')
         parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
+        parser.add_argument('--udp_port', '-up', type=int, default=9090, help='UDP port')
+        parser.add_argument('--ack_timeout', '-at', type=float, default=0.5, help='UDP ack timeout')
+        parser.add_argument('--timeout', '-t', type=float, default=60*5, help='TCP timeout')
+        parser.add_argument('--udp_timeout', '-ut', type=float, default=60*5, help='UDP timeout')
         args = parser.parse_args()
         
         if args.block_size > 1024:
@@ -1218,8 +1162,12 @@ if __name__ == "__main__":
         port=args.port,
         block_size=args.block_size,
         debug=args.debug,
+        udp_port=args.udp_port,
+        udp_ack_timeout=args.ack_timeout,
+        timeout=args.timeout,
+        udp_timeout=args.udp_timeout
     )
-    
+        
     fs_node_1.file_manager.run()
 
     node_controller = FS_Node_controller(fs_node_1)

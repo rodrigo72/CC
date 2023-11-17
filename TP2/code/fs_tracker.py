@@ -74,7 +74,9 @@ class FS_Tracker(Thread):
 
         while True:
             try:
-                print(datetime.now(), "Waiting for data from client", address)
+                if self.debug:
+                    print(datetime.now(), "Waiting for data from client", address)
+                    
                 bytes_read = client.recv(1)
 
                 if not bytes_read:
@@ -83,24 +85,21 @@ class FS_Tracker(Thread):
                 counter += 1
                 decoded_byte = struct.unpack("!B", bytes_read)[0]
                 
+                request_handlers = {
+                    action.UPDATE_FULL_FILES.value: self.handle_update_full_request,
+                    action.UPDATE_PARTIAL.value: self.handle_update_partial_request,
+                    action.LOCATE_NAME.value: self.handle_locate_name_request,
+                    action.LOCATE_HASH.value: self.handle_locate_hash_request,
+                    action.CHECK_STATUS.value: self.handle_check_status_request,
+                    action.UPDATE_STATUS.value: self.handle_update_status_request,
+                }
+                
                 if decoded_byte == action.LEAVE.value:
                     result = self.db.delete_node(address[0])
                     self.send_response(client, result, counter)
                     break
-                elif decoded_byte == action.TEST.value:
-                    self.send_response(client, status.SUCCESS.value, counter)
-                elif decoded_byte == action.UPDATE_FULL_FILES.value:
-                    self.handle_update_full_request(client, address, counter)
-                elif decoded_byte == action.UPDATE_PARTIAL.value:
-                    self.handle_update_partial_request(client, address, counter)
-                elif decoded_byte == action.LOCATE_NAME.value:
-                    self.handle_locate_name_request(client, address, counter)
-                elif decoded_byte == action.LOCATE_HASH.value:
-                    self.handle_locate_hash_request(client, address, counter)
-                elif decoded_byte == action.CHECK_STATUS.value:
-                    self.handle_check_status_request(client, address, counter)
-                elif decoded_byte == action.UPDATE_STATUS.value:
-                    self.handle_update_status_request(client, address, counter)
+                elif decoded_byte in request_handlers:
+                    request_handlers[decoded_byte](client, address, counter)
                 else:
                     self.send_response(client, status.INVALID_ACTION.value, counter)
                     break
@@ -366,7 +365,11 @@ Function to parse command line arguments
 def parse_args():
     try:
         parser = argparse.ArgumentParser(description='FS Tracker Command Line Options')
-        parser.add_argument('--port', '-p', type=int, default=9090, help='Port to bind the server to')
+        parser.add_argument('-p', '--port', type=int, default=9090, help='Port to bind the server to')
+        parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
+        parser.add_argument('-db','--db',  default="db.sqlite3", help='Database file name')
+        parser.add_argument('-m', '--max', type=int, default=5, help='Maximum number of connections')
+        parser.add_argument('-t', '--timeout', type=int, default=60*5, help='Timeout for connections')
     
         return parser.parse_args()
     except argparse.ArgumentError as e:
@@ -380,7 +383,7 @@ if __name__ == "__main__":
     
     args = parse_args()
         
-    tracker = FS_Tracker(db="db.sqlite3", port=args.port, debug=True)
+    tracker = FS_Tracker(db=args.db, port=args.port, debug=args.debug, max_connections=args.max, timeout=args.timeout)
     
     try:
         tracker.run()
