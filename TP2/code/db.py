@@ -122,14 +122,6 @@ class DB_manager(metaclass=utils.SingletonMeta):
             
             self.cursor.execute(
                 """
-                DELETE FROM Node
-                WHERE ip = (?)
-                """,
-                (address,)
-            )
-            
-            self.cursor.execute(
-                """
                 DELETE FROM Node_has_Block
                 WHERE Node_ip = (?)
                 """,
@@ -138,16 +130,10 @@ class DB_manager(metaclass=utils.SingletonMeta):
             
             self.cursor.execute(
                 """
-                DELETE FROM Block AS B
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM Node_has_Block AS NB
-                    WHERE NB.Block_size = B.size
-                        AND NB.Block_number = B.number
-                        AND NB.Block_division_size = B.division_size
-                        AND NB.Block_File_hash = B.File_hash
-                )
-                """
+                DELETE FROM Node
+                WHERE ip = (?)
+                """,
+                (address,)
             )
             
             self.conn.commit()

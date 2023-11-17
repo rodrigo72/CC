@@ -74,6 +74,7 @@ class FS_Node:
         self.done = False
         self.timeout = timeout
         self.response_queue = Queue()
+        self.udp_response_queue = Queue()
         
         # UDP
         self.udp_max_buffer_size = udp_max_buffer_size
@@ -125,7 +126,7 @@ class FS_Node:
                     action_udp.GET_FULL_FILE.value: self.udp_get_full_file_flag_handler,
                     action_udp.GET_PARTIAL_FILE.value: self.udp_get_partial_file_flag_handler,
                     action_udp.START_DATA.value: self.udp_start_data_flag_handler,
-                    action_udp.START_END_DATA.value: self.udp_start_end_data_flag_handler,
+                    action_udp.START_END_DATA.value: self.udp_start_data_flag_handler,
                     action_udp.DATA.value: self.udp_data_flag_handler,
                     action_udp.END_DATA.value: self.udp_end_data_flag_handler,
                 }
@@ -229,10 +230,7 @@ class FS_Node:
             file_name = None
             if address in self.udp_receiver_connections:
                 file_name = self.udp_receiver_connections[address].file_name
-            self.response_queue.put((address, file_name, status.SUCCESS.value))
-
-            if self.callback:
-                self.callback()
+            self.udp_response_queue.put((address, file_name, status.SUCCESS.value))
             
     """
     Send blocks
@@ -242,9 +240,12 @@ class FS_Node:
         
         seq_num = 1
         is_last = False
-        
+        with self.lock:
+            self.udp_ack_queue.init(address)
+                    
         while not is_last:
 
+            max_timeout_retries = 5
             block_number = block_numbers.pop(0)
             file_name, data = self.file_manager.get_block_with_file_hash(file_hash, division_size, block_number)
             
@@ -275,9 +276,8 @@ class FS_Node:
             self.udp_socket.sendto(packet, address)
             
             expected_ack = seq_num + 1
-            self.udp_ack_queue.init(address)
             
-            while True:
+            while max_timeout_retries:
                 received_ack = self.udp_ack_queue.get(address, self.udp_ack_timeout)
                 
                 if received_ack is not None:
@@ -298,6 +298,8 @@ class FS_Node:
                     
                     if self.debug:
                         print(" >>> (timeout) Resending packet: ", (seq_num, block_number, is_last))
+                    
+                    max_timeout_retries -= 1
                     
                     self.udp_socket.sendto(packet, address)
             
@@ -463,14 +465,14 @@ class FS_Node:
     
     def encode_udp_start_data_message(self, flag, seq_num, file_name, division_size, block_number, data):  # data is in bytes
             
-            file_name = file_name.encode("utf-8")
-            file_name_length = len(file_name)
-            
-            data_len = len(data)
-            format_string = "!BHB%dsHHL%ds" % (file_name_length, data_len)
-            flat_data = [flag, seq_num, file_name_length, file_name, division_size, block_number, data_len, data]
-                        
-            return struct.pack(format_string, *flat_data)
+        file_name = file_name.encode("utf-8")
+        file_name_length = len(file_name)
+        
+        data_len = len(data)
+        format_string = "!BHB%dsHHL%ds" % (file_name_length, data_len)
+        flat_data = [flag, seq_num, file_name_length, file_name, division_size, block_number, data_len, data]
+                    
+        return struct.pack(format_string, *flat_data)
     
     def encode_udp_data_message(self, flag, seq_num, block_number, data): # data is bytes
         
@@ -552,7 +554,9 @@ class FS_Node:
         self.file_manager.reset_block_dir()
     
     """
-    FS_Tracker functions
+    ------------------------------------
+            FS_Tracker functions
+    ------------------------------------
     """
     
     def connect_to_fs_tracker(self):
@@ -587,9 +591,6 @@ class FS_Node:
                     if self.debug:
                         print("Invalid action")
                     break
-                
-                if self.callback:
-                    self.callback()
         
         except socket.timeout:
             if self.debug:
@@ -685,11 +686,13 @@ class FS_Node:
     def send_leave_request(self):  # receives a normal response
         self.socket.sendall(struct.pack("!B", action.LEAVE.value))
         
-    def send_update_full_request(self):  # receives a normal response
-        pass
+    def send_update_full_request(self, files):  # receives a normal response
+        encoded_request = self.encode_update_full_request(files)
+        self.socket.sendall(encoded_request)
     
-    def send_update_partial_request(self):  # receives a normal response
-        pass
+    def send_update_partial_request(self, files):  # receives a normal response
+        encoded_request = self.encode_update_partial_request(files)
+        self.socket.sendall(encoded_request)
     
     def send_update_status_request(self, s):  # receives a normal response
         self.socket.sendall(struct.pack("!BB", action.UPDATE_STATUS.value, s))
@@ -709,6 +712,66 @@ class FS_Node:
     """
     Functions that encode messages to send to the tracker
     """
+    
+    def encode_update_full_request(self, files):
+        
+        n_files = len(files)
+        format_string = "!BH"
+        flat_data = [action.UPDATE_FULL_FILES.value, n_files]
+        
+        for file in files:
+            file_hash, file_name, block_sets = file    
+        
+            file_hash = bytes.fromhex(file_hash)
+            file_hash_length = len(file_hash)
+            file_name = file_name.encode("utf-8")
+            file_name_length = len(file_name)
+            n_block_sets = len(block_sets)
+
+            format_string += "H%dsB%dsB" % (file_hash_length, file_name_length)
+            flat_data.extend([file_hash_length, file_hash, file_name_length, file_name, n_block_sets])
+            
+            for block in block_sets:
+                division_size, last_block_size, n_blocks = block
+                format_string += "HHH"
+                flat_data.extend([division_size, last_block_size, n_blocks])
+                        
+        return struct.pack(format_string, *flat_data)
+
+    def encode_update_partial_request(self, files):
+        
+        n_files = len(files)
+        format_string = "!BH"
+        flat_data = [action.UPDATE_PARTIAL.value, n_files]
+        
+        for file in files:
+            file_hash, file_name, block_sets = file
+        
+            file_hash = bytes.fromhex(file_hash)
+            file_hash_length = len(file_hash)
+            file_name = file_name.encode("utf-8")
+            file_name_length = len(file_name)
+            n_block_sets = len(block_sets)
+
+            format_string += "H%dsB%dsB" % (file_hash_length, file_name_length)
+            flat_data.extend([file_hash_length, file_hash, file_name_length, file_name, n_block_sets])
+            
+            for block in block_sets:
+                division_size, last_block_size, sequences, blocks = block
+                format_string += "HHB"
+                flat_data.extend([division_size, last_block_size, len(sequences)])
+                for sequence in sequences:
+                    format_string += "HH"
+                    flat_data.extend([sequence[0], sequence[1]])
+                n_blocks = len(blocks)
+                format_string += "H"
+                flat_data.append(n_blocks)
+                for block_number in blocks:
+                    format_string += "H"
+                    flat_data.append(block_number)
+                        
+        return struct.pack(format_string, *flat_data)
+        
     
     def encode_check_status_request(self, ip):
         
@@ -801,6 +864,9 @@ class FS_Node:
                     if block.is_last:
                         last_block_size = block.size
                         
+                block_sets_up_format_string += "B"
+                block_sets_up.append(0)
+                        
                 n_block_sets_up += 1
                 block_sets_up_format_string += "HHH"
                 block_sets_up.extend([division_size, last_block_size, len(block_set)])
@@ -819,7 +885,7 @@ class FS_Node:
             if n_block_sets_up > 0:
                 format_string_up += "H%dsB%ds" % (file_hash_length, file_name_length)
                 flat_data_up.extend([file_hash_length, file_hash, file_name_length, file_name])
-
+                
                 format_string_up += "B"
                 flat_data_up.append(n_block_sets_up)
 
@@ -851,10 +917,10 @@ class FS_Node:
         division_size_dict = {}  # division_size => [ip]
                 
         for ip, data in full_files_info.items():
-            for block_size, _, n_blocks in data:
+            for block_size, last_block_size, n_blocks in data:
                 if division_size_dict.get(block_size) is None:
                     division_size_dict[block_size] = []
-                division_size_dict[block_size].append((ip, n_blocks))
+                division_size_dict[block_size].append((ip, n_blocks, last_block_size))
                 
         best_division_size = None
         best_division_size_n_ips = 0
@@ -876,6 +942,7 @@ class FS_Node:
         
         ips = division_size_dict[best_division_size]
         n_blocks = ips[0][1]
+        last_block_size = ips[0][2]
         n_ips = len(ips)
         
         blocks_per_ip = n_blocks // n_ips
@@ -884,11 +951,11 @@ class FS_Node:
         blocks_assignment = {}
         
         if blocks_per_ip != 0:
-            for ip in ips:
-                blocks_assignment[ip[0]] = blocks_per_ip
+            for ip, _, _ in ips:
+                blocks_assignment[ip] = blocks_per_ip
                 
         while remaining_blocks > 0:
-            for ip, _ in ips:
+            for ip, _, _ in ips:
                 if remaining_blocks == 0:
                     break
                 if blocks_assignment.get(ip) is None:
@@ -904,9 +971,12 @@ class FS_Node:
             is_full = False
             if n_blocks_ip == n_blocks:
                 is_full = True
-            new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full)
+            if start + n_blocks_ip - 1 == n_blocks:
+                new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full, last_block_size)
+            else:
+                new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full, division_size)
             start += n_blocks_ip
-
+        
         return best_division_size, new_blocks_assignment
 
    
@@ -963,20 +1033,9 @@ FS_Node_controller is a class that handles the user input
 
 class FS_Node_controller:
     def __init__(self, node):
-        self.response_event = threading.Event()
         self.node = node
         self.done = False
-        
-    def set_response_event(self):
-        self.response_event.set()
-        
-    def reset_response_event(self):
-        self.response_event.clear()
-        
-    def wait_for_response(self):
-        self.response_event.wait()
-        self.reset_response_event()
-        return self.node.response_queue.get()
+        self.full_update = False
         
     def run(self):
         while not self.done and not self.node.done:
@@ -990,29 +1049,31 @@ class FS_Node_controller:
                     self.done = True
                     self.node.send_leave_request()
                     print("Leaving ...")
-                    output = self.wait_for_response()
+                    output = self.node.response_queue.get()
                     print_response_output(output)
                     
-                elif command == "full update" or command == "fu":
+                elif not self.full_update and (command == "full update" or command == "fu"):
                     uf_packed_data, up_packed_data = self.node.encode_all_files()
                     
                     if uf_packed_data is not None:
                         self.node.socket.sendall(uf_packed_data)
                         print("Sending UPDATE_FULL request ...")
-                        output = self.wait_for_response()
+                        output = self.node.response_queue.get()
                         print_response_output(output)
                         
                     if up_packed_data is not None:
                         self.node.socket.sendall(up_packed_data)
                         print("Sending UPDATE_PARTIAL request ...")
-                        output = self.wait_for_response()
+                        output = self.node.response_queue.get()
                         print_response_output(output)
+                        
+                    self.full_update = True
                         
                 elif command == "locate name" or command == "ln":
                     file_name = input("Enter file name: ")
                     self.node.send_locate_name_request(file_name)
                     print("Locating file name...")
-                    output = self.wait_for_response()
+                    output = self.node.response_queue.get()
                     print_locate_name_output(output)
                     
                     
@@ -1020,7 +1081,7 @@ class FS_Node_controller:
                     file_hash = input("Enter file hash: ")
                     self.node.send_locate_hash_request(file_hash)
                     print("Locating file hash ...")
-                    output = self.wait_for_response()
+                    output = self.node.response_queue.get()
                     print_locate_hash_output(output)
                     
                 elif command == "locate hash with name" or command == "lhn":
@@ -1030,20 +1091,20 @@ class FS_Node_controller:
                     if result is None:
                         print("File not found in local directory. Sendind LOCATE_NAME request ...")
                         self.node.send_locate_name_request(file_name)  
-                        output = self.wait_for_response()
+                        output = self.node.response_queue.get()
                         print_locate_name_output(output)
                         
                     else:
                         print("File found in local directory. Sendind LOCATE_HASH request ...")
                         self.node.send_locate_hash_request(result)
-                        output = self.wait_for_response()
+                        output = self.node.response_queue.get()
                         print_locate_hash_output(output)
                     
                 elif command == "check status" or command == "cs":
                     ip = input("Enter ip address: ")
                     self.node.send_check_status_request(ip)
                     print("Checking status ...")
-                    output = self.wait_for_response()
+                    output = self.node.response_queue.get()
                     print_check_status_output(output)
                     
                 elif command == "update status" or command == "us":
@@ -1051,13 +1112,13 @@ class FS_Node_controller:
                     s = input("Enter status: ")
                     self.node.send_update_status_request(int(s))
                     print("Updating status ...")
-                    output = self.wait_for_response()
+                    output = self.node.response_queue.get()
                     print_response_output(output)
                     
                 elif command == "get" or command == "g":
                     file_hash = input("Enter file hash: ")
                     self.node.send_locate_hash_request(file_hash)
-                    response = self.wait_for_response()
+                    response = self.node.response_queue.get()
                     
                     if (
                         (response[0] is None or len(response[0]) == 0) and 
@@ -1072,26 +1133,42 @@ class FS_Node_controller:
                         print("No addresses available")
                         continue
                         
-                    print(output)
+                    if self.node.debug:
+                        print(output)
                         
                     for ip, blocks in output.items():
                         if blocks[2]:  # full file
                             print(f"Sending GET_FULL_FILE request to {ip} ...")
-                            self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, division_size)
+                            self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, division_size)                            
                         else:
                             print(f"Sending GET_PARTIAL_FILE request to {ip} ...")
                             sequences = [(blocks[0], blocks[1])]
                             self.node.send_udp_get_partial_file_request((ip, self.node.udp_port), file_hash, division_size, sequences, [])
                             
                     file_name = None
-                    for _ in range(len(output)):
-                        address, file_name, status = self.wait_for_response()
+                    output_length = len(output)
+                    
+                    for _ in range(output_length):
+                        address, file_name, res_status = self.node.udp_response_queue.get(timeout=60*10)
+                        last_block_size = output[address[0]][3] 
                         
+                        if output_length == 1 and res_status == status.SUCCESS.value:
+                            block_sets = [(division_size, last_block_size, output[address[0]][1])]
+                            self.node.send_update_full_request([(file_hash, file_name, block_sets)])
+                        
+                        elif res_status == status.SUCCESS.value:
+                            sequences = [(output[address[0]][0], output[address[0]][1])]
+                            block_sets = [(division_size, last_block_size, sequences, [])]
+                            self.node.send_update_partial_request([(file_hash, file_name, block_sets)])
+                    
+                    for i in range(output_length):
+                        output = self.node.response_queue.get(timeout=60*10)
+                    
                     r = self.node.file_manager.join_blocks(file_name, division_size)
                     if r:
                         print("File joined successfully")
                     else:
-                        print("Error joining file")
+                        print("Error joining file")           
                             
                 elif command == "join blocks" or command == "jbb":
                     file_name = input("Enter file name: ")
@@ -1136,8 +1213,8 @@ def parse_args():
         parser.add_argument('--dir', '-D', type=str, default=None, help='Directory to store files')
         parser.add_argument('--udp_port', '-up', type=int, default=9090, help='UDP port')
         parser.add_argument('--ack_timeout', '-at', type=float, default=0.5, help='UDP ack timeout')
-        parser.add_argument('--timeout', '-t', type=float, default=60*5, help='TCP timeout')
-        parser.add_argument('--udp_timeout', '-ut', type=float, default=60*5, help='UDP timeout')
+        parser.add_argument('--timeout', '-t', type=float, default=60*10, help='TCP timeout')
+        parser.add_argument('--udp_timeout', '-ut', type=float, default=60*10, help='UDP timeout')
         args = parser.parse_args()
         
         if args.block_size > 1024:
@@ -1173,9 +1250,7 @@ if __name__ == "__main__":
     node_controller = FS_Node_controller(fs_node_1)
     node_controller_thread = threading.Thread(target=node_controller.run)
     node_controller_thread.start()
-    
-    fs_node_1.callback = node_controller.set_response_event
-    
+        
     try:
         fs_node_1.run()
     except KeyboardInterrupt:

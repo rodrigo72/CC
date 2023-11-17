@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 import struct
 import argparse
-from utils import action, status
+from utils import action, status, join_blocks
 from db import DB_manager
 import traceback
 
@@ -71,8 +71,9 @@ class FS_Tracker(Thread):
 
     def listen_to_client(self, client, address):
         counter = 0
+        leave = False
 
-        while True:
+        while not leave:
             try:
                 if self.debug:
                     print(datetime.now(), "Waiting for data from client", address)
@@ -84,6 +85,9 @@ class FS_Tracker(Thread):
 
                 counter += 1
                 decoded_byte = struct.unpack("!B", bytes_read)[0]
+                
+                if self.debug:
+                    print(datetime.now(), "Request received",  action(decoded_byte).name)
                 
                 request_handlers = {
                     action.UPDATE_FULL_FILES.value: self.handle_update_full_request,
@@ -97,15 +101,12 @@ class FS_Tracker(Thread):
                 if decoded_byte == action.LEAVE.value:
                     result = self.db.delete_node(address[0])
                     self.send_response(client, result, counter)
-                    break
+                    leave = True
                 elif decoded_byte in request_handlers:
                     request_handlers[decoded_byte](client, address, counter)
                 else:
                     self.send_response(client, status.INVALID_ACTION.value, counter)
                     break
-                
-                if self.debug:
-                    print(datetime.now(), "Request received",  action(decoded_byte).name)
                 
             except Exception as e:
                 if self.debug:
@@ -129,15 +130,13 @@ class FS_Tracker(Thread):
     """
     
     def send_response(self, client, status, counter):
-        if self.debug:
-            print(datetime.now(), "Sending response to client")
         try:
             flat_data = []
             format_string = "!BBH"
             flat_data.extend([action.RESPONSE.value, status, counter])
             client.sendall(struct.pack(format_string, *flat_data))
             if self.debug:
-                print(datetime.now(), "Response sent to client")
+                print(datetime.now(), "-> Response sent to client")
         except Exception as e:
             if self.debug:
                 print("[send_response]", datetime.now(), e, client, '\n')
@@ -193,17 +192,27 @@ class FS_Tracker(Thread):
             block_sets_data = []
             
             for _ in range(n_block_sets):
-                block_size, last_block_size, n_blocks = struct.unpack("!HHH", client.recv(2+2+2))
+                block_size, last_block_size, n_sequences = struct.unpack("!HHB", client.recv(2+2+1))
+                
+                sequences = []
+                for _ in range(n_sequences):
+                    first, last = struct.unpack("!HH", client.recv(2+2))
+                    sequences.append((first, last))
+                
+                n_blocks = struct.unpack("!H", client.recv(2))[0]
                 
                 blocks = []
                 for _ in range(n_blocks):
                     blocks.append(struct.unpack("!H", client.recv(2))[0])
+                    
+                blocks = join_blocks(sequences, blocks)
                 
                 block_sets_data.append((block_size, last_block_size, blocks))
             
-            files.append((file_hash, file_name, block_sets_data))
-        
+            files.append((file_name, file_hash, block_sets_data))
+                    
         status = self.db.update_node_partial_files(address[0], files)
+
         self.send_response(client, status, counter)
         
     def handle_locate_name_request(self, client, address, counter):
@@ -218,6 +227,9 @@ class FS_Tracker(Thread):
         response = self.encode_locate_name_response(results, counter)
         client.sendall(response)
         
+        if self.debug:
+            print(datetime.now(), "-> Response sent to client")
+        
     def handle_locate_hash_request(self, client, address, counter):
         file_hash = self.receive_file_hash(client)
         
@@ -230,6 +242,9 @@ class FS_Tracker(Thread):
         response = self.encode_locate_hash_response(results, counter)
         client.sendall(response)
         
+        if self.debug:
+            print(datetime.now(), "-> Response sent to client")
+        
     def handle_check_status_request(self, client, address, counter):
         ip_bytes = struct.unpack("!BBBB", client.recv(4))
         ip_str = socket.inet_ntoa(bytes(ip_bytes))
@@ -239,10 +254,16 @@ class FS_Tracker(Thread):
         encoded_response = self.encode_check_status_response(status_db, result, counter)
         client.sendall(encoded_response)
         
+        if self.debug:
+            print(datetime.now(), "-> Response sent to client")
+        
     def handle_update_status_request(self, client, address, counter):
         status = struct.unpack("!B", client.recv(1))[0]
         result = self.db.update_node_status(address[0], status)
         self.send_response(client, result, counter)
+        
+        if self.debug:
+            print(datetime.now(), "-> Response sent to client")
         
     """
     Functions to encode responses
@@ -369,7 +390,7 @@ def parse_args():
         parser.add_argument('-d', '--debug', default=False, action='store_true', help='Enable debug mode')
         parser.add_argument('-db','--db',  default="db.sqlite3", help='Database file name')
         parser.add_argument('-m', '--max', type=int, default=5, help='Maximum number of connections')
-        parser.add_argument('-t', '--timeout', type=int, default=60*5, help='Timeout for connections')
+        parser.add_argument('-t', '--timeout', type=int, default=60*10, help='Timeout for connections')
     
         return parser.parse_args()
     except argparse.ArgumentError as e:
