@@ -2,7 +2,7 @@
 #import "bytefield.typ": *
 #show: LNCS-paper.with(
   title: "Transferência rápida e fiável de múltiplos servidores em simultâneo",
-  subtitle: "Comunicações por Computador\nTrabalho prático Nº2",
+  subtitle: "Trabalho prático Nº2\nComunicações por Computador",
   university: "Universidade do Minho, Departamento de Informática",
   email_type: "alunos.uminho.pt",
   authors: (
@@ -27,7 +27,6 @@
 
 = Arquitetura da solução
 
-
 = FS Tracker Protocol
 
 == Motivação
@@ -41,13 +40,13 @@
 === Atualização dos ficheiros completos
 
 #bytefield(
-  bits: 40,
-  bitheader: (0, 8, 24, 39),
+  bits: 32,
+  bitheader: (0, 8, 24, 31),
   bits(8)[Type],
   bits(16)[Nº of files],
-  bits(16)[File hash length],
+  bits(8)[File hash length],
   bits(40)[File hash],
-  bits(16)[File name length],
+  bits(8)[File name length],
   bits(24)[File name],
   bits(8)[Nº block sets],
   bits(16)[Division size],
@@ -58,22 +57,20 @@
 === Atualização parcial dos ficheiros
 
 #bytefield(
-  bits: 40,
-  bitheader: (0, 8, 24, 39),
+  bits: 32,
+  bitheader: (0, 8, 24, 31),
   bits(8)[Type],
   bits(16)[Nº of files],
-  bits(16)[File hash length],
+  bits(8)[File hash length],
   bits(40)[File hash],
-  bits(16)[File name length],
+  bits(8)[File name length],
   bits(24)[File name],
   bits(8)[Nº block sets],
   bits(16)[Division size],
   bits(16)[Size of the last block],
   bits(16)[Nº of blocks],
-  bits(16)[Block],
-  bits(16)[Block],
-  bits(16)[Block],
-  bits(16)[Block],
+  bits(16)[Block number],
+  bits(16)[Block number]
 )
 
 === Resposta genérica
@@ -87,7 +84,7 @@
 
 )
 
-=== Pacote de saída
+=== Pedido de saída
 
 #bytefield(
   bits: 8,
@@ -126,14 +123,58 @@
 === Localizar ficheiro por nome
 
 #bytefield(
-  bits: 24,
-  bitheader: (0, 8, 23),
+  bits: 40,
+  bitheader: (0, 8, 16, 39),
   bits(8)[Type],
-  bits(16)[File name length],
+  bits(8)[File name length],
   bits(24)[File name],
 )
 
-== Localizar ficheiro por hash
+=== Localizar ficheiro por hash
+
+#bytefield(
+  bits: 40,
+  bitheader: (0, 8, 16, 39),
+  bits(8)[Type],
+  bits(8)[File hash length],
+  bits(24)[File hash],
+)
+
+=== Resposta da localização de um ficheiro por nome
+
+#bytefield(
+  bits: 72,
+  bitheader: (0, 8, 24, 32, 48, 56, 71),
+  bits(8)[Type],
+  bits(16)[Nº IPs],
+  bits(32)[IPv4 address],
+  bits(16)[Nº hashes],
+  bits(8)[Hash length],
+  bits(24)[File hash],
+  bits(16)[Nº IPs],
+  bits(16)[IP reference]
+)
+
+=== Resposta da localização de um ficheiro por hash
+
+#bytefield(
+  bits: 56,
+  bits(8)[Type],
+  bits(16)[Nº IPs],
+  bits(32)[IPv4 address],
+  bits(16)[Nº hashes],
+  bits(8)[Hash length],
+  bits(24)[File hash],
+  bits(16)[Nº IPs],
+  bits(16)[IP reference],
+  bits(8)[Nº block sets],
+  bits(16)[Division size],
+  bits(16)[Last block size],
+  bits(16)[Is full],
+  bits(16)[Nº of blocks],
+  bits(16)[Block number]
+
+)
 
 == Implementação
 
@@ -146,6 +187,63 @@
 == Vista geral
 
 == Especificação
+
+=== Dados iniciais
+
+#bytefield(
+  bits(8)[Type],
+  bits(16)[Sequence number],
+  bits(8)[File name length],
+  bits(16)[File name],
+  bits(16)[Division size],
+  bits(16)[Block number],
+  bits(32)[Data length],
+  bits(16)[Data]
+)
+
+=== Dados
+
+#bytefield(
+  bits: 40,
+  bits(8)[Type],
+  bits(16)[Sequence number],
+  bits(16)[Block number],
+  bits(32)[Data length],
+  bits(8)[Data]
+)
+
+=== Ack
+
+#bytefield(
+  bits: 24,
+  bits(8)[Type],
+  bits(16)[Ack number]
+)
+
+=== Pedido de um ficheiro completo
+
+#bytefield(
+  bits: 48,
+  bits(8)[Type],
+  bits(8)[Hash length],
+  bits(16)[File hash],
+  bits(16)[Division size]
+)
+
+=== Pedido de parte(s) de um ficheiro
+
+#bytefield(
+  bits: 48,
+  bits(8)[Type],
+  bits(8)[Hash length],
+  bits(16)[File hash],
+  bits(16)[Division size],
+  bits(8)[Nº sequences],
+  bits(16)[First],
+  bits(16)[Last],
+  bits(16)[Nº blocks],
+  bits(16)[Block number]
+)
 
 == Implementação
 
