@@ -52,13 +52,16 @@ class FS_Tracker(Thread):
             client, address = self.socket.accept()
             self.clients.append(client)
             client.settimeout(self.timeout)
-
+            
+            print(datetime.now(), "Client connected", address)
+            host_name, _, _ = socket.gethostbyaddr(address[0])
+            
             if self.debug:
-                print(datetime.now(), "Client connected", address)
+                print(datetime.now(), "Client connected", host_name)
 
             node_thread = Thread(
                 target=self.listen_to_client,
-                args=(client, address)
+                args=(client, host_name)
             )
             
             node_thread.start()
@@ -69,14 +72,14 @@ class FS_Tracker(Thread):
         for thread in self.threads:
             thread.join()
 
-    def listen_to_client(self, client, address):
+    def listen_to_client(self, client, host_name):
         counter = 0
         leave = False
 
         while not leave:
             try:
                 if self.debug:
-                    print(datetime.now(), "Waiting for data from client", address)
+                    print(datetime.now(), "Waiting for data from client", host_name)
                     
                 bytes_read = client.recv(1)
 
@@ -99,11 +102,11 @@ class FS_Tracker(Thread):
                 }
                 
                 if decoded_byte == action.LEAVE.value:
-                    result = self.db.delete_node(address[0])
+                    result = self.db.delete_node(host_name)
                     self.send_response(client, result, counter)
                     leave = True
                 elif decoded_byte in request_handlers:
-                    request_handlers[decoded_byte](client, address, counter)
+                    request_handlers[decoded_byte](client, host_name, counter)
                 else:
                     self.send_response(client, status.INVALID_ACTION.value, counter)
                     break
@@ -114,14 +117,14 @@ class FS_Tracker(Thread):
                     print("Error message:", e)
                     print("Traceback:")
                     traceback.print_exc()
-                    print("Address:", address, '\n')
+                    print("Host name:", host_name, '\n')
                 break
             
-        self.db.delete_node(address[0])
+        self.db.delete_node(host_name)
         client.close()
 
         if self.debug:
-            print(datetime.now(), "Client disconnected", address)
+            print(datetime.now(), "Client disconnected", host_name)
 
         return False
     
@@ -165,7 +168,7 @@ class FS_Tracker(Thread):
         n_block_sets = struct.unpack("!B", client.recv(1))[0]
         return file_hash, file_name, n_block_sets
         
-    def handle_update_full_request(self, client, address, counter):
+    def handle_update_full_request(self, client, host_name, counter):
         n_files = struct.unpack("!H", client.recv(2))[0]
         files = []
         
@@ -179,11 +182,11 @@ class FS_Tracker(Thread):
             
             files.append((file_hash, file_name, block_sets_data))
         
-        status = self.db.update_node_full_files(address[0], files)
+        status = self.db.update_node_full_files(host_name, files)
         
         self.send_response(client, status, counter)
 
-    def handle_update_partial_request(self, client, address, counter):
+    def handle_update_partial_request(self, client, host_name, counter):
         n_files = struct.unpack("!H", client.recv(2))[0]
         files = []
         
@@ -211,14 +214,14 @@ class FS_Tracker(Thread):
             
             files.append((file_name, file_hash, block_sets_data))
                     
-        status = self.db.update_node_partial_files(address[0], files)
+        status = self.db.update_node_partial_files(host_name, files)
 
         self.send_response(client, status, counter)
         
-    def handle_locate_name_request(self, client, address, counter):
+    def handle_locate_name_request(self, client, host_name, counter):
         file_name = self.receive_file_name(client)
                 
-        results, status_db = self.db.locate_file_name(file_name, address[0])
+        results, status_db = self.db.locate_file_name(file_name, host_name)
                 
         if status_db != status.SUCCESS.value:
             self.send_response(client, status, counter)
@@ -230,10 +233,10 @@ class FS_Tracker(Thread):
         if self.debug:
             print(datetime.now(), "-> Response sent to client")
         
-    def handle_locate_hash_request(self, client, address, counter):
+    def handle_locate_hash_request(self, client, host_name, counter):
         file_hash = self.receive_file_hash(client)
         
-        results, status_db = self.db.locate_file_hash(file_hash, address[0])
+        results, status_db = self.db.locate_file_hash(file_hash, host_name)
         
         if status_db != status.SUCCESS.value:
             self.send_response(client, status, counter)
@@ -245,11 +248,13 @@ class FS_Tracker(Thread):
         if self.debug:
             print(datetime.now(), "-> Response sent to client")
         
-    def handle_check_status_request(self, client, address, counter):
-        ip_bytes = struct.unpack("!BBBB", client.recv(4))
-        ip_str = socket.inet_ntoa(bytes(ip_bytes))
+    def handle_check_status_request(self, client, host_name, counter):
         
-        result, status_db = self.db.get_node_status(ip_str)
+        host_name_length = struct.unpack("!B", client.recv(1))[0]
+        host_name = struct.unpack("!%ds" % host_name_length, 
+                                  client.recv(host_name_length))[0].decode("utf-8")
+        
+        result, status_db = self.db.get_node_status(host_name)
                 
         encoded_response = self.encode_check_status_response(status_db, result, counter)
         client.sendall(encoded_response)
@@ -257,9 +262,9 @@ class FS_Tracker(Thread):
         if self.debug:
             print(datetime.now(), "-> Response sent to client")
         
-    def handle_update_status_request(self, client, address, counter):
+    def handle_update_status_request(self, client, host_name, counter):
         status = struct.unpack("!B", client.recv(1))[0]
-        result = self.db.update_node_status(address[0], status)
+        result = self.db.update_node_status(host_name, status)
         self.send_response(client, result, counter)
         
         if self.debug:
@@ -271,33 +276,34 @@ class FS_Tracker(Thread):
     
     def encode_locate_name_response(self, results, counter):
                 
-        ip_dict = {ip: i for i, (_, ip) in enumerate(results, start=1)}
-        ip_dict_len = len(ip_dict)
-        hash_dict = {file_hash: [] for file_hash, ip in results}
-        
-        for file_hash, ip in results:
-            hash_dict[file_hash].append(ip)    
+        host_name_dict = {host_name: i for i, (_, host_name) in enumerate(results, start=1)}
+        host_name_dict_len = len(host_name_dict)
+        hash_dict = {file_hash: [] for file_hash, _ in results}
+
+        for file_hash, host_name in results:
+            hash_dict[file_hash].append(host_name)    
         
         format_string = "!BH"
-        flat_data = [action.RESPONSE_LOCATE_NAME.value, ip_dict_len]
-        for ip in ip_dict.keys():
-            ip_bytes = socket.inet_aton(ip)
-            format_string += "BBBB"
-            flat_data.extend(ip_bytes)
+        flat_data = [action.RESPONSE_LOCATE_NAME.value, host_name_dict_len]
+            
+        for host_name in host_name_dict.keys():
+            host_name_length = len(host_name)
+            format_string += "B%ds" % host_name_length
+            flat_data.extend([host_name_length, host_name.encode("utf-8")])
             
         n_hashes = len(hash_dict)
         format_string += "H"
         flat_data.append(n_hashes)
         
-        for file_hash, ips in hash_dict.items():
+        for file_hash, host_names in hash_dict.items():
             file_hash_bytes = bytes.fromhex(file_hash)
             file_hash_len = len(file_hash_bytes)
             format_string += "B%dsH" % file_hash_len
-            flat_data.extend([file_hash_len, file_hash_bytes, len(ips)])
+            flat_data.extend([file_hash_len, file_hash_bytes, len(host_names)])
             
-            for ip in ips:
+            for host_name in host_names:
                 format_string += "H"
-                flat_data.append(ip_dict[ip])
+                flat_data.append(host_name_dict[host_name])
                 
         format_string += "H"
         flat_data.append(counter)
@@ -309,24 +315,24 @@ class FS_Tracker(Thread):
         format_string = "!B"
         flat_data = [action.RESPONSE_LOCATE_HASH.value]
         
-        ips = {}
+        host_names = {}
         
-        # organize results by ip and division size
+        # organize results by host name and division size
         for result in results:
-            ip, block_size, block_number, division_size, is_last = result
+            host_name, block_size, block_number, division_size, is_last = result
             
-            if ips.get(ip) is None:
-                ips[ip] = {}
+            if host_names.get(host_name) is None:
+                host_names[host_name] = {}
                 
-            if ips[ip].get(division_size) is None:
-                ips[ip][division_size] = []
+            if host_names[host_name].get(division_size) is None:
+                host_names[host_name][division_size] = []
                 
-            ips[ip][division_size].append((block_size, block_number, is_last))
+            host_names[host_name][division_size].append((block_size, block_number, is_last))
         
-        # ip => (division_size => (division_size, last_block_size, is_full_file, block_numbers))
-        new_ips = {}
+        # host_name => (division_size => (division_size, last_block_size, is_full_file, block_numbers))
+        new_host_names = {}
             
-        for ip, division_size_dict in ips.items():
+        for host_name, division_size_dict in host_names.items():
             for division_size, block_list in division_size_dict.items():
                 
                 sorted(block_list, key=lambda x: x[1])
@@ -335,28 +341,28 @@ class FS_Tracker(Thread):
                 last_block = block_list[-1]
                 
                 if block_list_length == last_block[1]:
-                    if new_ips.get(ip) is None:
-                        new_ips[ip] = []
-                    new_ips[ip].append((division_size, last_block[0], last_block[1], []))
+                    if new_host_names.get(host_name) is None:
+                        new_host_names[host_name] = []
+                    new_host_names[host_name].append((division_size, last_block[0], last_block[1], []))
                     
                 else:
                     block_numbers = [block[1] for block in block_list]
                     
-                    if new_ips.get(ip) is None:
-                        new_ips[ip] = []
-                    new_ips[ip].append((division_size, last_block[0], 0, block_numbers))
+                    if new_host_names.get(host_name) is None:
+                        new_host_names[host_name] = []
+                    new_host_names[host_name].append((division_size, last_block[0], 0, block_numbers))
                             
-        n_ips = len(new_ips)
+        n_host_names = len(new_host_names)
         
         format_string += "H"
-        flat_data.append(n_ips)
+        flat_data.append(n_host_names)
         
-        for ip, division_size_dict in new_ips.items():
+        for host_name, division_size_dict in new_host_names.items():
             
-            ip_bytes = socket.inet_aton(ip)
+            host_name_length = len(host_name)
             sets_len = len(division_size_dict)
-            format_string += "BBBBB"
-            flat_data.extend([*ip_bytes, sets_len])
+            format_string += "B%dsB" % host_name_length
+            flat_data.extend([host_name_length, host_name.encode("utf-8"), sets_len])
             
             for division_size, last_block_size, full_file, block_numbers in division_size_dict:
 

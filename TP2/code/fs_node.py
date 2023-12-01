@@ -612,14 +612,15 @@ class FS_Node:
         self.response_queue.put((result_status, counter))
             
     def handle_locate_hash_response(self):
-        n_ips = struct.unpack("!H", self.socket.recv(2))[0]
+        n_host_names = struct.unpack("!H", self.socket.recv(2))[0]
         
-        output_full_files = {}  # ip -> (block_size, last_block_size, full_file, [blocks])
+        output_full_files = {}  # host_name -> (block_size, last_block_size, full_file, [blocks])
         output_partial_files = {}
         
-        for _ in range(n_ips):
-            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
-            ip_str = socket.inet_ntoa(bytes(ip_bytes))
+        for _ in range(n_host_names):
+            
+            host_name_length = struct.unpack("!B", self.socket.recv(1))[0]
+            host_name = self.socket.recv(host_name_length).decode("utf-8")
             
             n_sets = struct.unpack("!B", self.socket.recv(1))[0]
             
@@ -635,28 +636,29 @@ class FS_Node:
                         block_number = struct.unpack("!H", self.socket.recv(2))[0]
                         blocks.append(block_number)
                         
-                    if output_partial_files.get(ip_str) is None:
-                        output_partial_files[ip_str] = []
+                    if output_partial_files.get(host_name) is None:
+                        output_partial_files[host_name] = []
                         
-                    output_partial_files[ip_str].append((block_size, last_block_size, blocks))
+                    output_partial_files[host_name].append((block_size, last_block_size, blocks))
                 else:     
-                    if output_full_files.get(ip_str) is None:
-                        output_full_files[ip_str] = []
-                    output_full_files[ip_str].append((block_size, last_block_size, full_file))
+                    if output_full_files.get(host_name) is None:
+                        output_full_files[host_name] = []
+                    output_full_files[host_name].append((block_size, last_block_size, full_file))
                                         
         counter = struct.unpack("!H", self.socket.recv(2))[0] 
         self.response_queue.put((output_full_files, output_partial_files, counter))            
         
     def handle_locate_name_response(self):
-        n_ips = struct.unpack("!H", self.socket.recv(2))[0]
-        ips_dict = {}
+        n_host_names = struct.unpack("!H", self.socket.recv(2))[0]
+        host_names_dict = {}
         
-        output = {}  # hash -> [ip]
+        output = {}  # hash -> [host_name]
         
-        for i in range(n_ips):
-            ip_bytes = struct.unpack("!BBBB", self.socket.recv(4))
-            ip_str = socket.inet_ntoa(bytes(ip_bytes))
-            ips_dict[i+1] = ip_str
+        for i in range(n_host_names):
+            
+            host_name_length = struct.unpack("!B", self.socket.recv(1))[0]
+            host_name = self.socket.recv(host_name_length).decode("utf-8")
+            host_names_dict[i+1] = host_name
             
         n_hashes = struct.unpack("!H", self.socket.recv(2))[0]
         
@@ -669,8 +671,8 @@ class FS_Node:
             n_ips_with_hash = struct.unpack("!H", self.socket.recv(2))[0]
             
             for _ in range(n_ips_with_hash):
-                ip_reference = struct.unpack("!H", self.socket.recv(2))[0]
-                output[file_hash].append(ips_dict[ip_reference])
+                host_name_reference = struct.unpack("!H", self.socket.recv(2))[0]
+                output[file_hash].append(host_names_dict[host_name_reference])
         
         counter = struct.unpack("!H", self.socket.recv(2))[0]    
         self.response_queue.put((output, counter))
@@ -914,68 +916,68 @@ class FS_Node:
         if full_files_info is None:
             return None
         
-        division_size_dict = {}  # division_size => [ip]
+        division_size_dict = {}  # division_size => [host_name]
                 
-        for ip, data in full_files_info.items():
+        for host_name, data in full_files_info.items():
             for block_size, last_block_size, n_blocks in data:
                 if division_size_dict.get(block_size) is None:
                     division_size_dict[block_size] = []
-                division_size_dict[block_size].append((ip, n_blocks, last_block_size))
+                division_size_dict[block_size].append((host_name, n_blocks, last_block_size))
                 
         best_division_size = None
-        best_division_size_n_ips = 0
-        for division_size, ips in division_size_dict.items():
-            len_ips = len(ips)
+        best_division_size_n_host_names = 0
+        for division_size, host_names in division_size_dict.items():
+            len_host_names = len(host_names)
             if (
                     best_division_size is None or
                     (
-                        len_ips == best_division_size_n_ips and
+                        len_host_names == best_division_size_n_host_names and
                         abs(division_size - best_div_size_fixed) < abs(best_division_size - best_div_size_fixed)
                     )
-                    or len_ips > best_division_size_n_ips
+                    or len_host_names > best_division_size_n_host_names
             ):
                 best_division_size = division_size
-                best_division_size_n_ips = len_ips
+                best_division_size_n_host_names = len_host_names
                 
         if best_division_size is None:
             return None
         
-        ips = division_size_dict[best_division_size]
-        n_blocks = ips[0][1]
-        last_block_size = ips[0][2]
-        n_ips = len(ips)
+        host_names = division_size_dict[best_division_size]
+        n_blocks = host_names[0][1]
+        last_block_size = host_names[0][2]
+        n_host_names = len(host_names)
         
-        blocks_per_ip = n_blocks // n_ips
-        remaining_blocks = n_blocks % n_ips
+        blocks_per_host_name = n_blocks // n_host_names
+        remaining_blocks = n_blocks % n_host_names
         
         blocks_assignment = {}
         
-        if blocks_per_ip != 0:
-            for ip, _, _ in ips:
-                blocks_assignment[ip] = blocks_per_ip
+        if blocks_per_host_name != 0:
+            for host_name, _, _ in host_names:
+                blocks_assignment[host_name] = blocks_per_host_name
                 
         while remaining_blocks > 0:
-            for ip, _, _ in ips:
+            for host_name, _, _ in host_names:
                 if remaining_blocks == 0:
                     break
-                if blocks_assignment.get(ip) is None:
-                    blocks_assignment[ip] = 1
+                if blocks_assignment.get(host_name) is None:
+                    blocks_assignment[host_name] = 1
                 else:
-                    blocks_assignment[ip] += 1
+                    blocks_assignment[host_name] += 1
                 remaining_blocks -= 1
 
         new_blocks_assignment = {}
         
         start = 1
-        for ip, n_blocks_ip in blocks_assignment.items():
+        for host_name, n_blocks_host_name in blocks_assignment.items():
             is_full = False
-            if n_blocks_ip == n_blocks:
+            if n_blocks_host_name == n_blocks:
                 is_full = True
-            if start + n_blocks_ip - 1 == n_blocks:
-                new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full, last_block_size)
+            if start + n_blocks_host_name - 1 == n_blocks:
+                new_blocks_assignment[host_name] = (start, start + n_blocks_host_name - 1, is_full, last_block_size)
             else:
-                new_blocks_assignment[ip] = (start, start + n_blocks_ip - 1, is_full, division_size)
-            start += n_blocks_ip
+                new_blocks_assignment[host_name] = (start, start + n_blocks_host_name - 1, is_full, division_size)
+            start += n_blocks_host_name
         
         return best_division_size, new_blocks_assignment
 
@@ -986,9 +988,9 @@ Functions that print the output of the tracker
 
 def print_locate_hash_output(output):
     output_full_files, output_partial_files, counter = output
-    for ip, data in output_full_files.items():
+    for host_name, data in output_full_files.items():
     
-        print(f"\tIPv4 address: {ip}")
+        print(f"\tHost name: {host_name}")
         for block_size, last_block_size, n_blocks in data:
             print(f"""
                     Division size: {block_size}
@@ -997,9 +999,9 @@ def print_locate_hash_output(output):
                 """)
             print("\n")
             
-    for ip, data in output_partial_files.items():
+    for host_name, data in output_partial_files.items():
         
-        print(f"\tIPv4 address: {ip}")
+        print(f"\tHost name: {host_name}")
         for block_size, last_block_size, blocks in data:
             print(f"""
                     Division size: {block_size}
@@ -1013,9 +1015,9 @@ def print_locate_hash_output(output):
 def print_locate_name_output(output):
     output, counter = output
     
-    for file_hash, ips in output.items():
+    for file_hash, host_names in output.items():
         print("File hash: ", file_hash)
-        print("\tIPs: ", ips)
+        print("\tHost names: ", host_names)
     print("Counter: ", counter)
     
 def print_check_status_output(output):
@@ -1101,8 +1103,8 @@ class FS_Node_controller:
                         print_locate_hash_output(output)
                     
                 elif command == "check status" or command == "cs":
-                    ip = input("Enter ip address: ")
-                    self.node.send_check_status_request(ip)
+                    host_name = input("Enter host name: ")
+                    self.node.send_check_status_request(host_name)
                     print("Checking status ...")
                     output = self.node.response_queue.get()
                     print_check_status_output(output)
@@ -1136,28 +1138,39 @@ class FS_Node_controller:
                     if self.node.debug:
                         print(output)
                         
-                    for ip, blocks in output.items():
+                    ips = []
+                    try:
+                        for host_name, _ in output.items():
+                            ips.append(socket.gethostbyname(host_name))
+                    except socket.gaierror as e:
+                        print(f"Unable to resolve host name: {e}")
+                        continue;
+                        
+                    i = 0;
+                    for _, blocks in output.items():
                         if blocks[2]:  # full file
-                            print(f"Sending GET_FULL_FILE request to {ip} ...")
-                            self.node.send_udp_get_full_file_request((ip, self.node.udp_port), file_hash, division_size)                            
+                            print(f"Sending GET_FULL_FILE request to {ips[i]} ...")
+                            self.node.send_udp_get_full_file_request((ips[i], self.node.udp_port), file_hash, division_size)                            
                         else:
-                            print(f"Sending GET_PARTIAL_FILE request to {ip} ...")
+                            print(f"Sending GET_PARTIAL_FILE request to {ips[i]} ...")
                             sequences = [(blocks[0], blocks[1])]
-                            self.node.send_udp_get_partial_file_request((ip, self.node.udp_port), file_hash, division_size, sequences, [])
-                            
+                            self.node.send_udp_get_partial_file_request((ips[i], self.node.udp_port), file_hash, division_size, sequences, [])
+                        i += 1
+                        
                     file_name = None
                     output_length = len(output)
                     
                     for _ in range(output_length):
                         address, file_name, res_status = self.node.udp_response_queue.get(timeout=60*10)
-                        last_block_size = output[address[0]][3] 
+                        host_name = socket.gethostbyaddr(address[0])[0]
+                        last_block_size = output[host_name][3] 
                         
                         if output_length == 1 and res_status == status.SUCCESS.value:
-                            block_sets = [(division_size, last_block_size, output[address[0]][1])]
+                            block_sets = [(division_size, last_block_size, output[host_name][1])]
                             self.node.send_update_full_request([(file_hash, file_name, block_sets)])
                         
                         elif res_status == status.SUCCESS.value:
-                            sequences = [(output[address[0]][0], output[address[0]][1])]
+                            sequences = [(output[host_name][0], output[host_name][1])]
                             block_sets = [(division_size, last_block_size, sequences, [])]
                             self.node.send_update_partial_request([(file_hash, file_name, block_sets)])
                     

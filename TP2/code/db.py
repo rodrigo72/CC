@@ -38,9 +38,9 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.cursor.execute(
                 """
                 create table if not exists Node (
-                    ip TEXT(15) not null,
+                    host_name TEXT(255) not null,
                     status INTEGER not null default 0,
-                    primary key (ip)
+                    primary key (host_name)
                 );
                 """
             )
@@ -74,14 +74,14 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.cursor.execute(
                 """
                 create table if not exists Node_has_Block (
-                    Node_ip text(25) not null,
+                    Node_host_name text(255) not null,
                     Block_size INTEGER NOT NULL,
                     Block_number INTEGER NOT NULL,
                     Block_division_size INTEGER NOT NULL,
                     Block_File_hash text(32) NOT NULL,
-                    primary key (Node_ip, Block_size, Block_number, Block_division_size, Block_File_hash),
-                    foreign key (Node_ip) 
-                        references Node (ip),
+                    primary key (Node_host_name, Block_size, Block_number, Block_division_size, Block_File_hash),
+                    foreign key (Node_host_name) 
+                        references Node (host_name),
                     foreign key (Block_size, Block_number, Block_division_size, Block_File_hash) 
                         references Block (size, number, division_size, File_hash)
                 );
@@ -116,24 +116,24 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 print("[clear_tables] Error: ", e)
             self.conn.rollback()
             
-    def delete_node(self, address):
+    def delete_node(self, host_name):
         try:
             self.conn.execute("BEGIN")
             
             self.cursor.execute(
                 """
                 DELETE FROM Node_has_Block
-                WHERE Node_ip = (?)
+                WHERE Node_host_name = (?)
                 """,
-                (address,)
+                (host_name,)
             )
             
             self.cursor.execute(
                 """
                 DELETE FROM Node
-                WHERE ip = (?)
+                WHERE host_name = (?)
                 """,
-                (address,)
+                (host_name,)
             )
             
             self.conn.commit()
@@ -148,7 +148,7 @@ class DB_manager(metaclass=utils.SingletonMeta):
     Inserting data
     """
             
-    def insert_block_data(self, address, size, number, division_size, is_last, file_hash):
+    def insert_block_data(self, host_name, size, number, division_size, is_last, file_hash):
                 
         insert_block_query = """
             INSERT OR IGNORE INTO Block (size, number, division_size, is_last, File_hash) 
@@ -156,22 +156,22 @@ class DB_manager(metaclass=utils.SingletonMeta):
         """
         
         insert_node_has_block_query = """
-            INSERT OR IGNORE INTO Node_has_Block (Node_ip, Block_size, Block_number, Block_division_size, Block_File_hash) 
+            INSERT OR IGNORE INTO Node_has_Block (Node_host_name, Block_size, Block_number, Block_division_size, Block_File_hash) 
             VALUES (?, ?, ?, ?, ?);
         """
 
         self.cursor.execute(insert_block_query, (size, number, division_size, is_last, file_hash))
-        self.cursor.execute(insert_node_has_block_query, (address, size, number, division_size, file_hash))
+        self.cursor.execute(insert_node_has_block_query, (host_name, size, number, division_size, file_hash))
     
-    def update_node_full_files(self, address, data):
+    def update_node_full_files(self, host_name, data):
         try:
             self.conn.execute("BEGIN")
             
             self.cursor.execute(
                 """
-                INSERT OR IGNORE INTO Node (ip) VALUES (?)
+                INSERT OR IGNORE INTO Node (host_name) VALUES (?)
                 """, 
-                (address,)
+                (host_name,)
             )
             
             for file in data:
@@ -188,12 +188,12 @@ class DB_manager(metaclass=utils.SingletonMeta):
                     block_size, last_block_size, n_blocks = block_set
                     i = 1
                     for i in range(1, n_blocks):
-                        self.insert_block_data(address, block_size, i, block_size, 0, file_hash)
+                        self.insert_block_data(host_name, block_size, i, block_size, 0, file_hash)
                         
                     if n_blocks != 1:
                         i += 1
                         
-                    self.insert_block_data(address, last_block_size, i, block_size, 1, file_hash)
+                    self.insert_block_data(host_name, last_block_size, i, block_size, 1, file_hash)
             
             self.conn.commit()
             return utils.status.SUCCESS.value
@@ -203,14 +203,14 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.conn.rollback()
             return utils.status.SERVER_ERROR.value
         
-    def update_node_partial_files(self, address, data):
+    def update_node_partial_files(self, host_name, data):
         try:
             self.conn.execute("BEGIN")
             
             self.cursor.execute(
                 """
-                INSERT OR IGNORE INTO Node (ip) VALUES (?)
-                """, (address,)
+                INSERT OR IGNORE INTO Node (host_name) VALUES (?)
+                """, (host_name,)
             )
             
             for file in data:
@@ -225,8 +225,8 @@ class DB_manager(metaclass=utils.SingletonMeta):
                     block_size, last_block_size, blocks = block_set
                     blocks = sorted(blocks)
                     for block in blocks[:-1]:
-                        self.insert_block_data(address, block_size, block, block_size, 0, file_hash)
-                    self.insert_block_data(address, last_block_size, blocks[-1], block_size, 1, file_hash)
+                        self.insert_block_data(host_name, block_size, block, block_size, 0, file_hash)
+                    self.insert_block_data(host_name, last_block_size, blocks[-1], block_size, 1, file_hash)
             
             self.conn.commit()
             return utils.status.SUCCESS.value
@@ -236,7 +236,7 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.conn.rollback()
             return utils.status.SERVER_ERROR.value
         
-    def update_node_status(self, address, status):
+    def update_node_status(self, host_name, status):
         try:
             self.conn.execute("BEGIN")
             
@@ -244,8 +244,8 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 """
                 UPDATE Node
                 SET status = (?)
-                WHERE ip = (?)
-                """, (status, address)
+                WHERE host_name = (?)
+                """, (status, host_name)
             )
             
             self.conn.commit()
@@ -260,7 +260,7 @@ class DB_manager(metaclass=utils.SingletonMeta):
     Querying tables
     """
         
-    def get_node_status(self, address):
+    def get_node_status(self, host_name):
         try:
             self.conn.execute("BEGIN")
             
@@ -268,8 +268,8 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 """
                 SELECT status
                 FROM Node
-                WHERE ip = (?)
-                """, (address,)
+                WHERE host_name = (?)
+                """, (host_name,)
             )
             
             result = self.cursor.fetchall()
@@ -286,22 +286,22 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.conn.rollback()
             return None, utils.status.SERVER_ERROR.value
             
-    def locate_file_hash(self, file_hash, address):
+    def locate_file_hash(self, file_hash, host_name):
         try:
             self.conn.execute("BEGIN")
                         
             query = """
-                SELECT NB.Node_ip, B.size, B.number, B.division_size, B.is_last
+                SELECT NB.Node_host_name, B.size, B.number, B.division_size, B.is_last
                 FROM Node_has_Block AS NB
                 JOIN Block AS B ON NB.Block_size = B.size
                                 AND NB.Block_number = B.number
                                 AND NB.Block_division_size = B.division_size
                                 AND NB.Block_File_hash = B.File_hash
-                WHERE B.File_hash = (?) AND NB.Node_ip != (?)
-                ORDER BY NB.Node_ip, B.division_size desc, B.number asc;
+                WHERE B.File_hash = (?) AND NB.Node_host_name != (?)
+                ORDER BY NB.Node_host_name, B.division_size desc, B.number asc;
             """
             
-            self.cursor.execute(query, (file_hash, address))
+            self.cursor.execute(query, (file_hash, host_name))
             results = self.cursor.fetchall()
                 
             self.conn.commit()
@@ -312,18 +312,18 @@ class DB_manager(metaclass=utils.SingletonMeta):
             self.conn.rollback()
             return None, utils.status.SERVER_ERROR.value
         
-    def locate_file_name(self, file_name, address):
+    def locate_file_name(self, file_name, host_name):
         try:
             self.conn.execute("BEGIN")
                         
             query = """
-                SELECT distinct NB.Block_File_hash, NB.Node_ip
+                SELECT distinct NB.Block_File_hash, NB.Node_host_name
                     FROM Node_has_Block AS NB
                     JOIN File AS F ON NB.Block_File_hash = F.hash
-                    WHERE F.name = (?) AND NB.Node_ip != (?);
+                    WHERE F.name = (?) AND NB.Node_host_name != (?);
             """
                         
-            self.cursor.execute(query, (file_name, address))
+            self.cursor.execute(query, (file_name, host_name))
             results = self.cursor.fetchall()
                             
             self.conn.commit()
