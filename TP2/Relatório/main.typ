@@ -37,7 +37,7 @@ São utilizadas as seguintes tecnologias: Python3, sqlite3, bind9 e XubunCORE.
 
 Primeiramente, achamos necessário explicitar a nossa abordagem em relação à divisão de ficheiros e gestão de dados.
 
-No `FS_Node`, é utilizada uma class `File_manager` que é responsável por fazer a divisão dos ficheiros por blocos, de acordo com um determinado _division size_, e por guardar os dados acerca dos ficheiros e dos blocos em estruturas de dados.
+No `FS_Node`, é utilizada uma classe `File_manager` que é responsável por fazer a divisão dos ficheiros por blocos, de acordo com um determinado _division size_, e por guardar os dados acerca dos ficheiros e dos blocos em estruturas de dados.
 
 #[
   #set text(size: 9pt)
@@ -120,7 +120,7 @@ Assim, dizer que um bloco é, por exemplo, o nº 3, com uma divisão por 512 byt
 
 === Resposta genérica
 
-Uma resposta genérica do #emph("FS Tracker"), i.e., que é enviada como responsta associada a mais do que um tipo de pedido (de saída e de atualização). (_type_: `RESPONSE = 8`).
+Uma resposta genérica do #emph("FS Tracker"), i.e., que é enviada como resposta associada a mais do que um tipo de pedido (de saída e de atualização). (_type_: `RESPONSE = 8`).
 
 #bytefield(
   bits: 40,
