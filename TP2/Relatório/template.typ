@@ -29,6 +29,7 @@
   // The path to a bibliography file if you want to cite some external
   // works.
   bibliography-file: none,
+  bibliography-full: false,
 
   // The document's content.
   body,
@@ -81,7 +82,7 @@
       grid(
         columns: (6em, 1fr, 6em),
         if calc.even(i) [#i],
-        align(center, upper(
+        align(center, (
           if calc.odd(i) { title } else { author-string }
         )),
         if calc.odd(i) { align(right)[#i] }
@@ -142,31 +143,6 @@
   // Configure citation and bibliography styles.
   set bibliography(style: "springer-mathphys", title: "References")
 
-  show figure: it => {
-    show: pad.with(x: 23pt)
-    set align(center)
-
-    v(12.5pt, weak: true)
-
-    // Display the figure's body.
-    it.body
-
-    // Display the figure's caption.
-    if it.has("caption") {
-      // Gap defaults to 17pt.
-      v(if it.has("gap") { it.gap } else { 17pt }, weak: true)
-      smallcaps(it.supplement)
-      if it.numbering != none {
-        [ ]
-        it.counter.display(it.numbering)
-      }
-      [. ]
-      it.caption.body
-    }
-
-    v(15pt, weak: true)
-  }
-
   // Theorems.
   show figure.where(kind: "theorem"): it => block(above: 11.5pt, below: 11.5pt, {
     strong({
@@ -213,7 +189,7 @@
     v(25pt, weak: true)
     show bibliography: set text(8.5pt)
     show bibliography: pad.with(x: 0.5pt)
-    bibliography(bibliography-file)
+    bibliography(bibliography-file, full: bibliography-full)
   }
 
   // The thing ends with details about the authors.
@@ -228,7 +204,7 @@
   body,
   kind: "theorem",
   supplement: [Theorem],
-  numbering: if numbered { "1" },
+  numbering: if numbered { "1" },
 )
 
 // And a function for a proof.
