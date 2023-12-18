@@ -43,7 +43,7 @@ class status(IntEnum):
     UDP_BLOCK_NOT_FOUND = 14
     
 """
-Checksum
+Checksum (not used)
 """
 
 def generate_checksum(message):
@@ -52,7 +52,7 @@ def generate_checksum(message):
     return checksum_bytes
 
 """
-Singleton metaclass (singleton design pattern)
+Singleton metaclass
 """
 
 class SingletonMeta(type):
@@ -65,7 +65,7 @@ class SingletonMeta(type):
         return cls._instances[cls]
 
 """
-Thread safe queue dictionary
+Queue dictionary
 """
 
 class Queue_dictionary:
@@ -83,7 +83,7 @@ class Queue_dictionary:
             self.queues[key] = Queue()
 
     # many threads use this function, but they only access their own queue
-    # so it is thread safe
+    # so it is thread safe (confia)
     def get(self, key, timeout=None):
         if key in self.queues:
             try:

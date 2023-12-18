@@ -4,6 +4,9 @@ import shutil
 from utils import SingletonMeta
 
 class File:
+    """
+    Class that represents a file
+    """
     def __init__(
         self,
         name,
@@ -39,6 +42,9 @@ class File:
     
     
 class Block:
+    """
+    Class that represents a block (part of a file)
+    """
     def __init__(
         self,
         original_division_size,
@@ -74,6 +80,9 @@ class Block:
     
 
 class File_manager(metaclass=SingletonMeta):
+    """
+    Class that manages files and blocks of a certain directory
+    """
     def __init__(self, dir, block_size=1024):
         self.dir = dir
         self.block_size = block_size
@@ -367,16 +376,3 @@ def generate_file_hash(file_path, block_size=65536):
         final_hash = hash_object.hexdigest()
             
     return final_hash
-      
-
-if __name__ == "__main__":
-    file_manager = File_manager("/home/core/code2/data/n1", 512)
-    file_manager.run()
-        
-    for file_name, file_instance in file_manager.files.items():
-        print(f"\t{file_name}: \n{file_instance}\n")
-        
-    # file_manager.save_block("test3.txt", 512, 1, True, b"hello")
-    
-    file_manager.reset_block_dir()
-    

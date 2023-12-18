@@ -4,6 +4,10 @@ import utils
 
 
 class DB_manager(metaclass=utils.SingletonMeta):
+    """
+    Class that manages the database (only one instance of this class is allowed)
+    SQLite3 is used as the database engine
+    """
     def __init__(self, db_file, debug=False):
         self.db_file = db_file
         self.conn = None
@@ -333,9 +337,3 @@ class DB_manager(metaclass=utils.SingletonMeta):
                 print("[locate_file] Error: ", e)
             self.conn.rollback()
             return None, utils.status.SERVER_ERROR.value
-            
-
-if __name__ == '__main__':
-    db = DB_manager("db.sqlite3")
-    db.drop_tables()
-    db.create_tables()
