@@ -7,7 +7,7 @@
 *.fdb_latexmk
 *.fls
 *.gz
-
+.idea/
 # Ignore LaTeX editor/project files
 .vscode/
 *.sublime-workspace
